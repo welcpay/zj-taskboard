@@ -67,6 +67,7 @@
   let frameTaskboardUrl = "";
   let frameCapability = "";
   let frameChallenge = "";
+  let frameIsBlob = false;
   let frameReady = false;
   let frameReadyWaiters = new Set();
   let hostRequests = new Map();
@@ -651,7 +652,44 @@
 
   function postToFrame(message, allowUnready = false) {
     if (!frame?.contentWindow || !frameOrigin || (!allowUnready && !frameReady)) return;
-    frame.contentWindow.postMessage(message, frameOrigin === "null" ? "*" : frameOrigin);
+    frame.contentWindow.postMessage(message, frameIsBlob ? "*" : frameOrigin);
+  }
+
+  const TASKBOARD_STORAGE_KEY = "__codexTaskboardEmbeddedStorage__";
+
+  function readTaskboardStorage() {
+    const entries = {};
+    try {
+      const raw = window.localStorage.getItem(TASKBOARD_STORAGE_KEY);
+      if (raw) Object.assign(entries, JSON.parse(raw));
+    } catch (_) {
+      // The Codex page may not expose localStorage; keep session-only state.
+    }
+    return entries;
+  }
+
+  function writeTaskboardStorage(key, value) {
+    if (typeof key !== "string") return;
+    try {
+      const entries = readTaskboardStorage();
+      entries[key] = String(value ?? "");
+      window.localStorage.setItem(TASKBOARD_STORAGE_KEY, JSON.stringify(entries));
+    } catch (_) {}
+  }
+
+  function removeTaskboardStorage(key) {
+    if (typeof key !== "string") return;
+    try {
+      const entries = readTaskboardStorage();
+      delete entries[key];
+      window.localStorage.setItem(TASKBOARD_STORAGE_KEY, JSON.stringify(entries));
+    } catch (_) {}
+  }
+
+  function clearTaskboardStorage() {
+    try {
+      window.localStorage.removeItem(TASKBOARD_STORAGE_KEY);
+    } catch (_) {}
   }
 
   function dispatchHostMessage(message) {
@@ -892,14 +930,37 @@
   }
 
   function onFrameMessage(event) {
-    if (!frame || event.source !== frame.contentWindow || event.origin !== frameOrigin) return;
+    if (!frame || event.source !== frame.contentWindow) return;
+    if (frameIsBlob) {
+      if (event.origin !== "null" && event.origin !== window.location.origin) return;
+    } else if (event.origin !== frameOrigin) {
+      return;
+    }
     const message = event.data;
     if (
       !message
       || typeof message !== "object"
-      || !frameCapability
-      || message.capability !== frameCapability
     ) return;
+    if (message.type === "taskboard:storage-request") {
+      frame.contentWindow.postMessage({
+        type: "taskboard:storage-init",
+        payload: readTaskboardStorage(),
+      }, "*");
+      return;
+    }
+    if (message.type === "taskboard:storage-set") {
+      writeTaskboardStorage(message.payload?.key, message.payload?.value);
+      return;
+    }
+    if (message.type === "taskboard:storage-remove") {
+      removeTaskboardStorage(message.payload?.key);
+      return;
+    }
+    if (message.type === "taskboard:storage-clear") {
+      clearTaskboardStorage();
+      return;
+    }
+    if (!frameCapability || message.capability !== frameCapability) return;
     if (message.type === "taskboard:frame-awaiting-challenge") {
       postFrameChallenge();
       return;
@@ -1058,6 +1119,55 @@
     });
   }
 
+  function taskboardBlobPrelude() {
+    return `<script>
+(() => {
+  const RealURLSearchParams = window.URLSearchParams;
+  class TaskboardURLSearchParams extends RealURLSearchParams {
+    get(name) {
+      return name === "host" ? "codex" : super.get(name);
+    }
+  }
+  window.URLSearchParams = TaskboardURLSearchParams;
+  const store = new Map();
+  const storage = {
+    get length() { return store.size; },
+    key(index) { return Array.from(store.keys())[index] ?? null; },
+    getItem(key) { return store.has(key) ? store.get(key) : null; },
+    setItem(key, value) {
+      store.set(String(key), String(value));
+      window.parent.postMessage({ type: "taskboard:storage-set", payload: { key: String(key), value: String(value) } }, "*");
+    },
+    removeItem(key) {
+      store.delete(String(key));
+      window.parent.postMessage({ type: "taskboard:storage-remove", payload: { key: String(key) } }, "*");
+    },
+    clear() {
+      store.clear();
+      window.parent.postMessage({ type: "taskboard:storage-clear" }, "*");
+    },
+  };
+  window.localStorage = storage;
+  window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "taskboard:storage-init") {
+      store.clear();
+      for (const [key, value] of Object.entries(event.data.payload || {})) store.set(key, value);
+    }
+  });
+  window.parent.postMessage({ type: "taskboard:storage-request" }, "*");
+})();
+</script>`;
+  }
+
+  function createTaskboardBlobUrl(origin, html) {
+    const base = `<base href="${origin}/">`;
+    const rewritten = String(html)
+      .replace(/^<!doctype[^>]*>/i, "")
+      .replace(/<head[^>]*>/i, (match) => `${match}${base}${taskboardBlobPrelude()}`);
+    const blobHtml = `<!doctype html>${rewritten}`;
+    return URL.createObjectURL(new Blob([blobHtml], { type: "text/html" }));
+  }
+
   function loadTaskboardFrame(cacheBust = false) {
     cancelFrameReadyWaiters(new Error("任务面板正在重新加载"));
     frame?.remove();
@@ -1066,6 +1176,7 @@
     frameCapability = "";
     frameChallenge = "";
     frameReady = false;
+    frameIsBlob = false;
     if (dragRegion) dragRegion.hidden = true;
     if (noDragLeft) noDragLeft.hidden = true;
     if (noDragRight) noDragRight.hidden = true;
@@ -1083,11 +1194,18 @@
     nextFrame.id = FRAME_ID;
     nextFrame.name = frameName;
     nextFrame.hidden = true;
-    nextFrame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-downloads");
-    nextFrame.src = "about:blank";
     nextFrame.title = "任务面板";
     nextFrame.referrerPolicy = "no-referrer";
     nextFrame.setAttribute("allow", "clipboard-read; clipboard-write");
+    const managedHtml = window.__codexTaskboardHtml__;
+    if (typeof managedHtml === "string" && managedHtml.length > 0) {
+      // Codex renderers whose CSP blocks arbitrary http iframes still allow
+      // blob: frames; load the managed page through a blob document instead.
+      nextFrame.src = createTaskboardBlobUrl(taskboardUrl.origin, managedHtml);
+      frameIsBlob = true;
+    } else {
+      nextFrame.src = taskboardUrl.href;
+    }
     nextFrame.addEventListener("load", challengeFrameDocument);
     frame = nextFrame;
     page.appendChild(nextFrame);
@@ -1440,6 +1558,7 @@
     frameOrigin = "";
     taskboardOrigin = "";
     frameTaskboardUrl = "";
+    frameIsBlob = false;
     if (window[SENTINEL_KEY] === api) delete window[SENTINEL_KEY];
   }
 
