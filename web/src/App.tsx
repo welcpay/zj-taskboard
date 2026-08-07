@@ -83,6 +83,12 @@ import {
   type TaskConversationItem,
 } from "./taskConversations";
 import {
+  currentTaskboardRouteSearch,
+  currentTaskboardRouteUrl,
+  pushTaskboardRoute,
+  replaceTaskboardRoute,
+} from "./taskboardRoute";
+import {
   EMPTY_TASK_FILTERS,
   matchesTaskFilters,
   matchesTaskSearch,
@@ -610,7 +616,7 @@ export function App() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [newTaskDraft, setNewTaskDraft] = useState<NewTaskEditorDraft | null>(null);
   const [detailTaskIdentifier, setDetailTaskIdentifier] = useState<string | null>(
-    () => readIssueIdentifier(window.location.search),
+    () => readIssueIdentifier(currentTaskboardRouteSearch()),
   );
   const [commentsRevision, setCommentsRevision] = useState(0);
   const [attachmentsRevision, setAttachmentsRevision] = useState(0);
@@ -1040,28 +1046,29 @@ export function App() {
     closeContextMenu();
     setProjectMenuOpen(false);
     setDetailTaskIdentifier(task.identifier);
-    const currentIssue = readIssueIdentifier(window.location.search);
-    const boardUrl = buildIssueUrl(window.location.href, task.projectId, null);
+    const currentRoute = currentTaskboardRouteUrl();
+    const currentIssue = readIssueIdentifier(currentRoute.search);
+    const boardUrl = buildIssueUrl(currentRoute.href, task.projectId, null);
     if (!currentIssue) {
-      window.history.replaceState(window.history.state, "", boardUrl);
+      replaceTaskboardRoute(boardUrl);
     }
     const detailUrl = buildIssueUrl(
-      currentIssue ? window.location.href : boardUrl.href,
+      currentIssue ? currentRoute.href : boardUrl.href,
       task.projectId,
       task.identifier,
     );
-    window.history.pushState(window.history.state, "", detailUrl);
+    pushTaskboardRoute(detailUrl);
   }
 
   function closeTaskDetail() {
     setDetailTaskIdentifier(null);
-    const url = buildIssueUrl(window.location.href, selectedProjectId || null, null);
-    window.history.replaceState(window.history.state, "", url);
+    const url = buildIssueUrl(currentTaskboardRouteUrl().href, selectedProjectId || null, null);
+    replaceTaskboardRoute(url);
   }
 
   useEffect(() => {
     function syncRouteFromLocation() {
-      const url = new URL(window.location.href);
+      const url = currentTaskboardRouteUrl();
       const routeProjectId = url.searchParams.get("project") ?? GLOBAL_PROJECT_ID;
       setDetailTaskIdentifier(readIssueIdentifier(url.search));
       if (routeProjectId === selectedProjectId) return;
@@ -1288,7 +1295,7 @@ export function App() {
       });
       setProjects(nextProjects);
       setSelectedProjectId((current) => {
-        const fromQuery = new URLSearchParams(window.location.search).get("project");
+        const fromQuery = new URLSearchParams(currentTaskboardRouteSearch()).get("project");
         if (fromQuery && nextProjects.some((project) => project.id === fromQuery)) return fromQuery;
         if (current && nextProjects.some((project) => project.id === current)) return current;
         return nextProjects.find((project) => project.id === GLOBAL_PROJECT_ID)?.id
@@ -2006,8 +2013,8 @@ export function App() {
     setActionError(null);
     undoStackRef.current = [];
     setUndoNotice(null);
-    const url = buildIssueUrl(window.location.href, projectId, null);
-    window.history.replaceState(null, "", url);
+    const url = buildIssueUrl(currentTaskboardRouteUrl().href, projectId, null);
+    replaceTaskboardRoute(url);
   }
 
   async function selectProject(choice: ProjectChoice) {
