@@ -27,6 +27,10 @@ use uuid::Uuid;
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const LOCAL_TEAM_UPDATE_ENDPOINT: &str =
+    "http://127.0.0.1:47823/api/team/updates/latest.json";
+const GITHUB_UPDATE_ENDPOINT: &str =
+    "https://github.com/welcpay/zj-taskboard/releases/latest/download/latest.json";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -457,8 +461,16 @@ async fn check_for_startup_update(
         snapshot.update_message = "正在检查更新…".into();
         snapshot.update_available = false;
     });
+    let endpoints = [LOCAL_TEAM_UPDATE_ENDPOINT, GITHUB_UPDATE_ENDPOINT]
+        .into_iter()
+        .map(tauri::Url::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     let update = app
-        .updater()
+        .updater_builder()
+        .endpoints(endpoints)
+        .map_err(|error| error.to_string())?
+        .build()
         .map_err(|error| error.to_string())?
         .check()
         .await
@@ -710,8 +722,18 @@ fn main() {
                 MenuItem::with_id(app, "check-update", "检查更新", false, None::<&str>)?;
             let restart_codex =
                 MenuItem::with_id(app, "restart-codex", "重新启动 Codex", true, None::<&str>)?;
+            let uninstall_service = MenuItem::with_id(
+                app,
+                "stop-and-uninstall-service",
+                "停止并卸载本地服务",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&check_update, &restart_codex, &quit])?;
+            let tray_menu = Menu::with_items(
+                app,
+                &[&check_update, &restart_codex, &uninstall_service, &quit],
+            )?;
             let check_update_menu = check_update.clone();
             TrayIconBuilder::new()
                 .icon(tauri::include_image!("icons/tray-codex.png"))
@@ -749,6 +771,33 @@ fn main() {
                                 );
                             }
                         });
+                    }
+                    "stop-and-uninstall-service" => {
+                        let remove = app
+                            .dialog()
+                            .message("这会停止并移除本地 LaunchAgent 和版本化 runtime，但不会删除任务、评论或附件。")
+                            .title("停止并卸载本地服务")
+                            .buttons(MessageDialogButtons::OkCancelCustom(
+                                "停止并卸载".into(),
+                                "取消".into(),
+                            ))
+                            .blocking_show();
+                        if !remove {
+                            return;
+                        }
+                        let Some(state) = app.try_state::<Arc<LauncherState>>() else {
+                            return;
+                        };
+                        let _lifecycle = state.lifecycle.lock().unwrap();
+                        stop_managed_child_locked(app, &state);
+                        match daemon::uninstall_daemon(app.clone()) {
+                            Ok(()) => app.exit(0),
+                            Err(error) => show_error_dialog(
+                                app,
+                                "本地服务卸载失败",
+                                &format!("无法完整移除本地服务。任务数据未被删除。\n\n{error}"),
+                            ),
+                        }
                     }
                     "quit" => {
                         let Some(state) = app.try_state::<Arc<LauncherState>>() else {

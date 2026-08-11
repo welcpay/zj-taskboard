@@ -31,6 +31,18 @@ export function dmgFileName(version) {
   return `Codex Taskboard ${version}.dmg`;
 }
 
+export function artifactNames(version) {
+  return {
+    dmg: `Codex.Taskboard_${version}_macOS-universal.dmg`,
+    pkg: `Codex.Taskboard_${version}_universal.pkg`,
+    updater: `Codex.Taskboard_${version}_universal.app.tar.gz`,
+    updaterSignature: `Codex.Taskboard_${version}_universal.app.tar.gz.sig`,
+    latest: "latest.json",
+    checksums: "release-assets.sha256",
+    metadata: "release-metadata.json",
+  };
+}
+
 export function localSignTargets(appPath) {
   return [
     path.join(appPath, "Contents", "MacOS", "codex-taskboard-launcher"),

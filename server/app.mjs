@@ -1911,6 +1911,19 @@ export function createTaskboardServer(options = {}) {
         return methodNotAllowed(response, ["GET", "POST"]);
       }
 
+      if (pathname === "/api/team/updates/latest.json") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        const profile = await activeTeamProfile();
+        if (!profile.updateMirror) {
+          throw new ApiError(404, "TEAM_UPDATE_MIRROR_DISABLED", "The active Team Server update mirror is disabled");
+        }
+        const remote = await teamRemoteJson(profile, "/api/updates/latest.json");
+        if (!remote?.manifest || remote.manifest.version !== remote.version) {
+          throw new ApiError(502, "INVALID_UPDATE_MANIFEST", "Team Server returned an invalid update manifest");
+        }
+        return sendJson(response, 200, remote.manifest);
+      }
+
       if (pathname === "/api/team/sync/status") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         return sendJson(response, 200, await teamSyncWorker.status());

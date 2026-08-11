@@ -245,14 +245,30 @@ jobs:
             "$BUNDLE_ROOT/release" \
             "$RELEASE_TAG"
 
-      - name: Verify signed release artifacts
+      - name: Create, sign, notarize, and staple PKG
+        env:
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: |
           set -euo pipefail
           BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
           APP_PATH="$BUNDLE_ROOT/macos/Codex Taskboard.app"
-          DMG_PATH="$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg"
           RELEASE_ROOT="$BUNDLE_ROOT/release"
-          npm run app:verify-release -- "$APP_PATH" "$DMG_PATH" "$RELEASE_ROOT" "$RELEASE_TAG"
+          UNSIGNED_PKG="$RELEASE_ROOT/Codex.Taskboard_${PACKAGE_VERSION}_unsigned.pkg"
+          PKG_PATH="$RELEASE_ROOT/Codex.Taskboard_${PACKAGE_VERSION}_universal.pkg"
+          node scripts/create-macos-pkg.mjs "$APP_PATH" "$UNSIGNED_PKG" "$PACKAGE_VERSION"
+          productsign --sign "$APPLE_INSTALLER_SIGNING_IDENTITY" "$UNSIGNED_PKG" "$PKG_PATH"
+          rm -f "$UNSIGNED_PKG"
+          xcrun notarytool submit "$PKG_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --key "$APPLE_API_KEY_PATH" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple -v "$PKG_PATH"
+          xcrun stapler validate "$PKG_PATH"
+          pkgutil --check-signature "$PKG_PATH"
+          spctl -a -t install -vv "$PKG_PATH"
 
       - name: Create trusted release asset manifest
         run: |
@@ -266,15 +282,37 @@ jobs:
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg"
           cp "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" "$RELEASE_ASSETS/"
           cp "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" "$RELEASE_ASSETS/"
+          cp "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.pkg" "$RELEASE_ASSETS/"
           cp "$BUNDLE_ROOT/release/latest.json" "$RELEASE_ASSETS/"
+          PACKAGE_VERSION="$PACKAGE_VERSION" RELEASE_ASSETS="$RELEASE_ASSETS" node -e '
+            const fs = require("node:fs");
+            const version = process.env.PACKAGE_VERSION;
+            const artifacts = fs.readdirSync(process.env.RELEASE_ASSETS).sort();
+            fs.writeFileSync(process.env.RELEASE_ASSETS + "/release-metadata.json", JSON.stringify({ schemaVersion: 1, version, gitCommit: process.env.GITHUB_SHA, artifacts }, null, 2) + "\n");
+          '
           (
             cd "$RELEASE_ASSETS"
             shasum -a 256 \
               "Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg" \
+              "Codex.Taskboard_${PACKAGE_VERSION}_universal.pkg" \
               "Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
               "Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
-              "latest.json" > "$MANIFEST_ROOT/release-assets.sha256"
+              "latest.json" \
+              "release-metadata.json" > "$MANIFEST_ROOT/release-assets.sha256"
           )
+          cp "$MANIFEST_ROOT/release-assets.sha256" "$RELEASE_ASSETS/release-assets.sha256"
+          cp "$MANIFEST_ROOT/release-assets.sha256" "$BUNDLE_ROOT/release/release-assets.sha256"
+          cp "$RELEASE_ASSETS/release-metadata.json" "$BUNDLE_ROOT/release/release-metadata.json"
+
+      - name: Verify signed release artifacts
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          APP_PATH="$BUNDLE_ROOT/macos/Codex Taskboard.app"
+          DMG_PATH="$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg"
+          PKG_PATH="$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.pkg"
+          RELEASE_ROOT="$BUNDLE_ROOT/release"
+          npm run app:verify-release -- "$APP_PATH" "$DMG_PATH" "$PKG_PATH" "$RELEASE_ROOT" "$RELEASE_TAG"
 
       - name: Preserve trusted release asset manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -299,9 +337,12 @@ jobs:
 
           v0.2.3 提供中文和英文界面，并完善任务详情、Dashboard、List、Gantt、自动化设置和 AI Chat；taskctl 也支持为任务和评论上传附件。" \
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.pkg" \
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
-            "$RELEASE_ASSETS/latest.json"
+            "$RELEASE_ASSETS/latest.json" \
+            "$RELEASE_ASSETS/release-metadata.json" \
+            "$RELEASE_ASSETS/release-assets.sha256"
 
       - name: Remove temporary signing files
         if: always()
@@ -452,11 +493,12 @@ jobs:
               "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
               > "$DRAFT_ASSETS/$ASSET_NAME"
           done < <(jq -r '.assets[] | [.id, .name] | @tsv' <<< "$DRAFT_RELEASE")
-          sed -E 's/^[0-9a-f]{64}  //' "$MANIFEST_PATH" | LC_ALL=C sort > "$EXPECTED_ASSETS"
+          { sed -E 's/^[0-9a-f]{64}  //' "$MANIFEST_PATH"; echo "release-assets.sha256"; } | LC_ALL=C sort > "$EXPECTED_ASSETS"
           node -e \
             'const fs=require("node:fs"); for (const name of fs.readdirSync(process.argv[1]).sort()) console.log(name)' \
             "$DRAFT_ASSETS" > "$ACTUAL_ASSETS"
           diff -u "$EXPECTED_ASSETS" "$ACTUAL_ASSETS"
+          cmp "$MANIFEST_PATH" "$DRAFT_ASSETS/release-assets.sha256"
           (
             cd "$DRAFT_ASSETS"
             shasum -a 256 --check "$MANIFEST_PATH"
@@ -470,6 +512,7 @@ jobs:
           npm run app:verify-release -- \
             "$UPDATER_ROOT/Codex Taskboard.app" \
             "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg" \
+            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.pkg" \
             "$DRAFT_ASSETS" \
             "$RELEASE_TAG"
 
@@ -491,7 +534,7 @@ jobs:
             echo "找不到唯一的目标 Draft Release。" >&2
             exit 1
           fi
-          EXPECTED_ASSET_COUNT="$(wc -l < "$MANIFEST_PATH" | tr -d ' ')"
+          EXPECTED_ASSET_COUNT="$(( $(wc -l < "$MANIFEST_PATH" | tr -d ' ') + 1 ))"
 
           if ! jq -e \
             --arg tag "$RELEASE_TAG" \
@@ -543,7 +586,7 @@ jobs:
           MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
           FINAL_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
             "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
-          EXPECTED_ASSET_COUNT="$(wc -l < "$MANIFEST_PATH" | tr -d ' ')"
+          EXPECTED_ASSET_COUNT="$(( $(wc -l < "$MANIFEST_PATH" | tr -d ' ') + 1 ))"
 
           if ! jq -e \
             --arg tag "$RELEASE_TAG" \

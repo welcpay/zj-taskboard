@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  artifactNames,
   dmgFileName,
   localSignTargets,
   nextPatchVersion,
@@ -28,4 +29,16 @@ test("local release signing preserves the bundled Node Foundation signature", ()
     "/tmp/Codex Taskboard.app/Contents/MacOS/codex-taskboard-launcher",
     "/tmp/Codex Taskboard.app",
   ]);
+});
+
+test("every macOS release artifact derives from one version", () => {
+  assert.deepEqual(artifactNames("0.3.0"), {
+    dmg: "Codex.Taskboard_0.3.0_macOS-universal.dmg",
+    pkg: "Codex.Taskboard_0.3.0_universal.pkg",
+    updater: "Codex.Taskboard_0.3.0_universal.app.tar.gz",
+    updaterSignature: "Codex.Taskboard_0.3.0_universal.app.tar.gz.sig",
+    latest: "latest.json",
+    checksums: "release-assets.sha256",
+    metadata: "release-metadata.json",
+  });
 });

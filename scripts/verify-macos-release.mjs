@@ -18,11 +18,12 @@ import { verifyUpdaterSignature } from "./verify-updater-signature.mjs";
 
 const appPath = process.argv[2] ? path.resolve(process.argv[2]) : null;
 const dmgPath = process.argv[3] ? path.resolve(process.argv[3]) : null;
-const releaseDirectory = process.argv[4] ? path.resolve(process.argv[4]) : null;
-const releaseTag = process.argv[5]?.trim();
-if (!appPath || !dmgPath || !releaseDirectory || !releaseTag) {
+const pkgPath = process.argv[4] ? path.resolve(process.argv[4]) : null;
+const releaseDirectory = process.argv[5] ? path.resolve(process.argv[5]) : null;
+const releaseTag = process.argv[6]?.trim();
+if (!appPath || !dmgPath || !pkgPath || !releaseDirectory || !releaseTag) {
   throw new Error(
-    "Usage: verify-macos-release.mjs <App.app> <DMG.dmg> <release-directory> <release-tag>",
+    "Usage: verify-macos-release.mjs <App.app> <DMG.dmg> <PKG.pkg> <release-directory> <release-tag>",
   );
 }
 
@@ -122,6 +123,17 @@ async function manifest(root, relative = "") {
   return entries;
 }
 
+async function findAppBundle(root, appName) {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(root, entry.name);
+    if (entry.name === appName) return candidate;
+    const nested = await findAppBundle(candidate, appName);
+    if (nested) return nested;
+  }
+  return null;
+}
+
 const artifactName = `Codex.Taskboard_${packageJson.version}_universal.app.tar.gz`;
 const artifactPath = path.join(releaseDirectory, artifactName);
 const signaturePath = `${artifactPath}.sig`;
@@ -134,7 +146,7 @@ await verifyUpdaterSignature({
 
 const latest = JSON.parse(await readFile(path.join(releaseDirectory, "latest.json"), "utf8"));
 if (latest.version !== packageJson.version) throw new Error("latest.json version is incorrect");
-const expectedUrl = `https://github.com/chuspeeism/dashi-taskboard/releases/download/${releaseTag}/${artifactName}`;
+const expectedUrl = `https://github.com/welcpay/zj-taskboard/releases/download/${releaseTag}/${artifactName}`;
 const expectedPlatforms = [
   "darwin-aarch64",
   "darwin-x86_64",
@@ -152,7 +164,21 @@ for (const platform of Object.values(latest.platforms)) {
   }
 }
 
+const metadata = JSON.parse(await readFile(path.join(releaseDirectory, "release-metadata.json"), "utf8"));
+if (metadata.schemaVersion !== 1 || metadata.version !== packageJson.version) {
+  throw new Error("release-metadata.json version is incorrect");
+}
+const checksumsPath = path.join(releaseDirectory, "release-assets.sha256");
+run("/usr/bin/shasum", ["-a", "256", "--check", checksumsPath], { cwd: releaseDirectory });
+
 verifyApp(appPath);
+const runtimeManifest = JSON.parse(await readFile(
+  path.join(appPath, "Contents", "Resources", "daemon-runtime", "runtime-manifest.json"),
+  "utf8",
+));
+if (runtimeManifest.version !== packageJson.version) {
+  throw new Error("runtime-manifest.json version does not match the release");
+}
 run("/usr/bin/hdiutil", ["verify", dmgPath]);
 run("/usr/bin/xcrun", ["stapler", "validate", dmgPath]);
 run("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", dmgPath]);
@@ -160,15 +186,23 @@ run("/usr/sbin/spctl", ["-a", "-t", "open", "--context", "context:primary-signat
 if (!signingDetails(dmgPath).includes(`TeamIdentifier=${releasePolicy.appleTeamId}`)) {
   throw new Error(`DMG does not use Apple Team ${releasePolicy.appleTeamId}`);
 }
+run("/usr/sbin/pkgutil", ["--check-signature", pkgPath]);
+run("/usr/bin/xcrun", ["stapler", "validate", pkgPath]);
+run("/usr/sbin/spctl", ["-a", "-t", "install", "-vv", pkgPath]);
 
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "codex-taskboard-release-verify."));
 let mountedDmg = null;
 try {
   const updaterDirectory = path.join(temporaryRoot, "updater");
+  const pkgDirectory = path.join(temporaryRoot, "pkg");
   run("/bin/mkdir", ["-p", updaterDirectory]);
   run("/usr/bin/tar", ["-xzf", artifactPath, "-C", updaterDirectory]);
   const updaterApp = path.join(updaterDirectory, path.basename(appPath));
   verifyApp(updaterApp);
+  run("/usr/sbin/pkgutil", ["--expand-full", pkgPath, pkgDirectory]);
+  const pkgApp = await findAppBundle(pkgDirectory, path.basename(appPath));
+  if (!pkgApp) throw new Error("PKG payload does not contain Codex Taskboard.app");
+  verifyApp(pkgApp);
 
   const attach = run("/usr/bin/hdiutil", ["attach", "-readonly", "-nobrowse", "-plist", dmgPath]);
   const attachJson = JSON.parse(run(
@@ -183,10 +217,11 @@ try {
   const dmgApp = path.join(mountedDmg, path.basename(appPath));
   verifyApp(dmgApp);
 
-  const [sourceManifest, updaterManifest, dmgManifest] = await Promise.all([
+  const [sourceManifest, updaterManifest, dmgManifest, pkgManifest] = await Promise.all([
     manifest(appPath),
     manifest(updaterApp),
     manifest(dmgApp),
+    manifest(pkgApp),
   ]);
   const expectedManifest = JSON.stringify(sourceManifest);
   if (JSON.stringify(updaterManifest) !== expectedManifest) {
@@ -194,6 +229,9 @@ try {
   }
   if (JSON.stringify(dmgManifest) !== expectedManifest) {
     throw new Error("DMG App differs from the notarized source App");
+  }
+  if (JSON.stringify(pkgManifest) !== expectedManifest) {
+    throw new Error("PKG App differs from the notarized source App");
   }
 
   run(path.join(updaterApp, "Contents", "MacOS", "node"), [

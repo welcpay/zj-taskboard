@@ -27,3 +27,11 @@ test("the desktop app no longer owns the HTTP listener or stops the daemon on ex
   assert.doesNotMatch(launcherSource, /daemon::stop_daemon\([^)]*Exit/);
   assert.match(launcherSource, /stop_managed_child_locked/);
 });
+
+test("the tray exposes explicit service removal while ordinary exit leaves the daemon alone", () => {
+  assert.match(launcherSource, /stop-and-uninstall-service/);
+  assert.match(launcherSource, /停止并卸载本地服务/);
+  assert.match(launcherSource, /daemon::uninstall_daemon/);
+  assert.match(launcherSource, /不会删除任务、评论或附件/);
+  assert.doesNotMatch(launcherSource, /"quit"[\s\S]{0,500}?daemon::uninstall_daemon/);
+});

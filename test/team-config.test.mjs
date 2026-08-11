@@ -146,6 +146,21 @@ test("local Team Server APIs manage profiles, Keychain login, activation, and co
     teamKeychain: keychain,
     remoteFetch: async (request) => {
       remoteRequests.push(request);
+      if (new URL(request.url).pathname === "/api/updates/latest.json") {
+        return new Response(JSON.stringify({
+          version: "0.3.0",
+          manifest: {
+            version: "0.3.0",
+            platforms: {
+              "darwin-universal": {
+                url: "https://alpha.example.test/updates/app.tar.gz",
+                signature: "updater-signature",
+              },
+            },
+          },
+          signature: "manifest-signature",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(JSON.stringify({
         user: { id: "user-1", name: "Alice" },
         role: "member",
@@ -187,6 +202,12 @@ test("local Team Server APIs manage profiles, Keychain login, activation, and co
   assert.equal(updated.body.profile.name, "Alpha Updated");
   assert.equal(updated.body.profile.updateMirror, true);
   assert.equal(updated.body.profile.hasToken, true);
+
+  const mirroredUpdate = await api("/api/team/updates/latest.json");
+  assert.equal(mirroredUpdate.response.status, 200);
+  assert.equal(mirroredUpdate.body.version, "0.3.0");
+  assert.equal(mirroredUpdate.body.platforms["darwin-universal"].signature, "updater-signature");
+  assert.equal(remoteRequests.at(-1).headers.get("authorization"), "Bearer token-alpha");
 
   const unknownLogin = await api("/api/team/profiles/missing/login", {
     method: "POST",
