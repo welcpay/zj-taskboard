@@ -2,7 +2,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, cp, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +10,17 @@ import { fileURLToPath } from "node:url";
 
 const dataDir = path.join(os.homedir(), "Library", "Application Support", "Codex Taskboard");
 const databasePath = path.join(dataDir, "taskboard.sqlite");
+const daemonLabel = "com.chuspeeism.codex-taskboard.daemon";
+
+export function appBackupPath({ dataDirectory = dataDir, version, timestamp = new Date().toISOString() }) {
+  const stamp = timestamp.replace(/[:.]/g, "-");
+  return path.join(
+    dataDirectory,
+    "backups",
+    "apps",
+    `Codex Taskboard-before-${version}-${stamp}.app.zip`,
+  );
+}
 
 export function readTaskboardCounts(filename = databasePath) {
   const db = new DatabaseSync(filename, { readOnly: true });
@@ -47,11 +58,43 @@ async function backupData(version) {
   return { backupDir, counts };
 }
 
+function stopDaemon() {
+  spawnSync("/bin/launchctl", [
+    "bootout",
+    `gui/${process.getuid()}/${daemonLabel}`,
+  ], { stdio: "ignore" });
+}
+
+async function archiveInstalledApp(installed, version) {
+  try {
+    await stat(installed);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  const backupPath = appBackupPath({ version });
+  await mkdir(path.dirname(backupPath), { recursive: true });
+  const archived = spawnSync("/usr/bin/ditto", [
+    "-c",
+    "-k",
+    "--keepParent",
+    "--sequesterRsrc",
+    installed,
+    backupPath,
+  ], { encoding: "utf8" });
+  if (archived.status !== 0) {
+    throw new Error(archived.stderr.trim() || archived.stdout.trim() || "Failed to archive the installed App");
+  }
+  await rm(installed, { recursive: true, force: true });
+  return backupPath;
+}
+
 async function main() {
   const versionIndex = process.argv.indexOf("--version");
   const version = versionIndex >= 0 ? process.argv[versionIndex + 1] : null;
   if (!version || !process.argv.includes("--yes")) throw new Error("Usage: install-local-release.mjs --version X.Y.Z --yes");
   const app = path.resolve(`src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app`);
+  stopDaemon();
   const runtimePath = path.join(dataDir, "launcher-runtime.json");
   try {
     const runtime = JSON.parse(await readFile(runtimePath, "utf8"));
@@ -63,11 +106,7 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const snapshot = await backupData(version);
   const installed = "/Applications/Codex Taskboard.app";
-  try {
-    await rename(installed, path.join(os.homedir(), ".Trash", `Codex Taskboard.app.${Date.now()}`));
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
+  const appBackup = await archiveInstalledApp(installed, version);
   await cp(app, installed, { recursive: true, force: true });
   const sourceLauncher = path.join(app, "Contents", "MacOS", "codex-taskboard-launcher");
   const installedLauncher = path.join(installed, "Contents", "MacOS", "codex-taskboard-launcher");
@@ -80,7 +119,7 @@ async function main() {
   if (after.projects < snapshot.counts.projects || after.issues < snapshot.counts.issues) {
     throw new Error(`Historical data verification failed: ${JSON.stringify({ before: snapshot.counts, after })}`);
   }
-  console.log(JSON.stringify({ version, backupDir: snapshot.backupDir, before: snapshot.counts, after }, null, 2));
+  console.log(JSON.stringify({ version, backupDir: snapshot.backupDir, appBackup, before: snapshot.counts, after }, null, 2));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

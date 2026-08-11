@@ -11,8 +11,10 @@ Codex Taskboard 是一个内嵌于 Codex APP 的任务面板。用于在 Codex A
 
 ## 下载和安装
 
-1. 打开 [GitHub Releases](https://github.com/chuspeeism/dashi-taskboard/releases) 下载对应设备版本
-2.  安装并从“应用程序”打开 App。启动器在后台运行，不显示主窗口或 Dock 图标。
+1. 首次安装从 [GitHub Releases](https://github.com/welcpay/zj-taskboard/releases) 下载 DMG，把 `Codex Taskboard.app` 拖入“应用程序”。
+2. 从“应用程序”打开 App。它会安装当前版本的本地服务并保持 `http://127.0.0.1:47823` 常驻；关闭 Codex 或 Taskboard App 不会停止该服务。
+3. 后续版本使用 App 内自动更新。更新会先安装并验证新 runtime，再切换 LaunchAgent；健康检查失败时自动恢复上一版本。
+4. 无法访问 GitHub 的内网、MDM 或 USB 部署可使用同一 Release 中的已签名 PKG。PKG 会停止旧服务、覆盖 App，再由新 App 自动启动并验证新服务。
 5. 转到新打开的官方 Codex/ChatGPT 窗口，从侧栏进入任务面板。
 
 ## 数据、配置和日志
@@ -23,7 +25,13 @@ Codex Taskboard 是一个内嵌于 Codex APP 的任务面板。用于在 Codex A
 | 附件 | `~/Library/Application Support/Codex Taskboard/attachments/` |
 | 云端配对和本地项目映射 | `~/Library/Application Support/Codex Taskboard/cloud-companion.json` |
 | 自动化策略 | `~/Library/Application Support/Codex Taskboard/codex-automation-policies.json` |
-| 启动日志 | `~/Library/Logs/Codex Taskboard/codex-taskboard-launcher.log` |
+| Team Server 配置 | `~/Library/Application Support/Codex Taskboard/team-servers.json`；访问令牌只存 macOS Keychain |
+| 版本化服务 runtime | `~/Library/Application Support/Codex Taskboard/runtime/` |
+| 覆盖安装备份 | `~/Library/Application Support/Codex Taskboard/backups/` |
+| 服务日志 | `~/Library/Logs/Codex Taskboard/daemon.stdout.log`、`daemon.stderr.log` |
+| 启动器日志 | `~/Library/Logs/Codex Taskboard/codex-taskboard-launcher.log` |
+
+删除 App 不会删除任务数据。完整移除服务时，应先从菜单栏的 Taskboard 图标选择“停止并卸载本地服务”；该操作移除 LaunchAgent 和 runtime，但默认保留数据库与附件。需要恢复旧 App 时，解压 `backups/apps/` 中的 `.app.zip` 并重新放入“应用程序”，再启动一次以协调对应 runtime。
 
 
 # 本地开发
@@ -134,7 +142,7 @@ CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
 npm run codex:inject -- --port 9229 --open
 ```
 
-Codex 26.715.52143 的 renderer CSP 会阻止任意 HTTP iframe。启动器使用 CDP 绕过该 renderer 的 CSP，并等待隔离的 Taskboard iframe 实际加载。正式 App 每次启动使用新的随机 CDP 端口和服务身份令牌；本地开发命令中的固定 CDP 端口只用于受信任的本机开发环境。
+Codex 26.715.52143 的 renderer CSP 会阻止任意 HTTP iframe。启动器使用 CDP 绕过该 renderer 的 CSP，并等待隔离的 Taskboard iframe实际加载。正式 App 的注入会话与本地 HTTP 服务相互独立；所有客户端固定连接 `127.0.0.1:47823`，CDP 端口只用于 Codex 注入会话。
 
 “在对话中打开”会选择对应的原生 Codex 项目，并打开带任务标识的未发送原生 composer。任务实际处理后，`taskctl` 从 `CODEX_THREAD_ID` 记录会话。记录的会话可通过 Codex 原生路由打开。每个任务可绑定一个 Git 分支或 worktree。
 
@@ -156,6 +164,10 @@ Codex 26.715.52143 的 renderer CSP 会阻止任意 HTTP iframe。启动器使�
 两名受信任协作者可使用 Worker Static Assets、D1 和私有 R2 bucket 运行云端任务面板。每台设备仍保留自己的项目 checkout 映射，并用本地 companion 提供 Codex、Git/worktree、Skill 和 MCP 能力。
 
 部署、密码轮换、路径映射和一次性数据迁移见 [Cloud collaboration](docs/cloud-collaboration.md)。
+
+## Team Server
+
+设置中可以保存多个 HTTPS Team Server，但同一时间只激活一个。每位用户使用自己的访问令牌，令牌只存入 macOS Keychain。本地服务始终作为读写入口和离线缓存：断网时继续处理任务，恢复连接后先拉取远程变更再上传本地操作；同一任务的冲突会形成任务分支，可选择保留主版本、提升分支或进行三方合并。启用更新镜像的 Team Server 会成为自动更新首选源，连接失败时回退 GitHub Releases。
 
 ## 检查
 
