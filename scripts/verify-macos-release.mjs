@@ -168,6 +168,18 @@ const metadata = JSON.parse(await readFile(path.join(releaseDirectory, "release-
 if (metadata.schemaVersion !== 1 || metadata.version !== packageJson.version) {
   throw new Error("release-metadata.json version is incorrect");
 }
+const expectedArtifacts = [
+  `Codex.Taskboard_${packageJson.version}_macOS-universal.dmg`,
+  `Codex.Taskboard_${packageJson.version}_universal.app.tar.gz`,
+  `Codex.Taskboard_${packageJson.version}_universal.app.tar.gz.sig`,
+  `Codex.Taskboard_${packageJson.version}_universal.pkg`,
+  "latest.json",
+  "release-assets.sha256",
+  "release-metadata.json",
+].sort();
+if (JSON.stringify([...metadata.artifacts].sort()) !== JSON.stringify(expectedArtifacts)) {
+  throw new Error("release-metadata.json artifact inventory is incomplete or contains unexpected assets");
+}
 const checksumsPath = path.join(releaseDirectory, "release-assets.sha256");
 run("/usr/bin/shasum", ["-a", "256", "--check", checksumsPath], { cwd: releaseDirectory });
 
@@ -186,7 +198,11 @@ run("/usr/sbin/spctl", ["-a", "-t", "open", "--context", "context:primary-signat
 if (!signingDetails(dmgPath).includes(`TeamIdentifier=${releasePolicy.appleTeamId}`)) {
   throw new Error(`DMG does not use Apple Team ${releasePolicy.appleTeamId}`);
 }
-run("/usr/sbin/pkgutil", ["--check-signature", pkgPath]);
+const pkgSignatureResult = run("/usr/sbin/pkgutil", ["--check-signature", pkgPath]);
+const pkgSignature = `${pkgSignatureResult.stdout}\n${pkgSignatureResult.stderr}`;
+if (!pkgSignature.includes(releasePolicy.appleTeamId)) {
+  throw new Error(`PKG does not use Apple Team ${releasePolicy.appleTeamId}`);
+}
 run("/usr/bin/xcrun", ["stapler", "validate", pkgPath]);
 run("/usr/sbin/spctl", ["-a", "-t", "install", "-vv", pkgPath]);
 

@@ -287,7 +287,15 @@ jobs:
           PACKAGE_VERSION="$PACKAGE_VERSION" RELEASE_ASSETS="$RELEASE_ASSETS" node -e '
             const fs = require("node:fs");
             const version = process.env.PACKAGE_VERSION;
-            const artifacts = fs.readdirSync(process.env.RELEASE_ASSETS).sort();
+            const artifacts = [
+              `Codex.Taskboard_${version}_macOS-universal.dmg`,
+              `Codex.Taskboard_${version}_universal.app.tar.gz`,
+              `Codex.Taskboard_${version}_universal.app.tar.gz.sig`,
+              `Codex.Taskboard_${version}_universal.pkg`,
+              "latest.json",
+              "release-assets.sha256",
+              "release-metadata.json",
+            ].sort();
             fs.writeFileSync(process.env.RELEASE_ASSETS + "/release-metadata.json", JSON.stringify({ schemaVersion: 1, version, gitCommit: process.env.GITHUB_SHA, artifacts }, null, 2) + "\n");
           '
           (
@@ -311,7 +319,7 @@ jobs:
           APP_PATH="$BUNDLE_ROOT/macos/Codex Taskboard.app"
           DMG_PATH="$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg"
           PKG_PATH="$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.pkg"
-          RELEASE_ROOT="$BUNDLE_ROOT/release"
+          RELEASE_ROOT="$RUNNER_TEMP/release-assets"
           npm run app:verify-release -- "$APP_PATH" "$DMG_PATH" "$PKG_PATH" "$RELEASE_ROOT" "$RELEASE_TAG"
 
       - name: Preserve trusted release asset manifest

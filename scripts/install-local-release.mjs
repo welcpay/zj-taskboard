@@ -2,7 +2,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -36,6 +36,36 @@ export function readTaskboardCounts(filename = databasePath) {
 
 async function sha256(filename) {
   return createHash("sha256").update(await readFile(filename)).digest("hex");
+}
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export async function waitForDaemonVersion(version, {
+  fetchImpl = fetch,
+  sleep: sleepImpl = sleep,
+  timeoutMs = 60_000,
+  now = Date.now,
+} = {}) {
+  const deadline = now() + timeoutMs;
+  let lastError = null;
+  while (now() < deadline) {
+    try {
+      const response = await fetchImpl("http://127.0.0.1:47823/health", {
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (response.ok) {
+        const health = await response.json();
+        if (health.product === "codex-taskboard" && health.daemonVersion === version) return health;
+        lastError = new Error(`Expected daemon ${version}, received ${health.daemonVersion ?? "unknown"}`);
+      } else {
+        lastError = new Error(`Health endpoint returned HTTP ${response.status}`);
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await sleepImpl(500);
+  }
+  throw new Error(`Codex Taskboard daemon ${version} did not become healthy: ${lastError?.message ?? "timeout"}`);
 }
 
 async function backupData(version) {
@@ -89,6 +119,26 @@ async function archiveInstalledApp(installed, version) {
   return backupPath;
 }
 
+export async function restoreAppArchive(backupPath, installed, { runCommand = spawnSync } = {}) {
+  if (!backupPath) return false;
+  await rm(installed, { recursive: true, force: true });
+  const restored = runCommand("/usr/bin/ditto", ["-x", "-k", backupPath, path.dirname(installed)], {
+    encoding: "utf8",
+  });
+  if (restored.status !== 0) {
+    throw new Error(restored.stderr?.trim() || restored.stdout?.trim() || "Failed to restore the previous App");
+  }
+  await stat(installed);
+  return true;
+}
+
+function openApp(installed) {
+  const opened = spawnSync("/usr/bin/open", ["-a", installed], { encoding: "utf8" });
+  if (opened.status !== 0) {
+    throw new Error(opened.stderr.trim() || opened.stdout.trim() || "Failed to open the installed App");
+  }
+}
+
 async function main() {
   const versionIndex = process.argv.indexOf("--version");
   const version = versionIndex >= 0 ? process.argv[versionIndex + 1] : null;
@@ -106,20 +156,37 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const snapshot = await backupData(version);
   const installed = "/Applications/Codex Taskboard.app";
-  const appBackup = await archiveInstalledApp(installed, version);
-  await cp(app, installed, { recursive: true, force: true });
   const sourceLauncher = path.join(app, "Contents", "MacOS", "codex-taskboard-launcher");
-  const installedLauncher = path.join(installed, "Contents", "MacOS", "codex-taskboard-launcher");
-  if (await sha256(sourceLauncher) !== await sha256(installedLauncher)) {
-    throw new Error("Installed Taskboard launcher does not match the release bundle");
+  const stagingApp = path.join("/Applications", `.Codex Taskboard.app.installing-${process.pid}`);
+  let appBackup = null;
+  let activated = false;
+  await rm(stagingApp, { recursive: true, force: true });
+  try {
+    await cp(app, stagingApp, { recursive: true, force: true });
+    const stagedLauncher = path.join(stagingApp, "Contents", "MacOS", "codex-taskboard-launcher");
+    if (await sha256(sourceLauncher) !== await sha256(stagedLauncher)) {
+      throw new Error("Staged Taskboard launcher does not match the release bundle");
+    }
+    appBackup = await archiveInstalledApp(installed, version);
+    await rename(stagingApp, installed);
+    activated = true;
+    openApp(installed);
+    await waitForDaemonVersion(version);
+    const after = readTaskboardCounts();
+    if (after.projects < snapshot.counts.projects || after.issues < snapshot.counts.issues) {
+      throw new Error(`Historical data verification failed: ${JSON.stringify({ before: snapshot.counts, after })}`);
+    }
+    console.log(JSON.stringify({ version, backupDir: snapshot.backupDir, appBackup, before: snapshot.counts, after }, null, 2));
+  } catch (error) {
+    stopDaemon();
+    await rm(stagingApp, { recursive: true, force: true });
+    if (activated) await rm(installed, { recursive: true, force: true });
+    if (appBackup) {
+      await restoreAppArchive(appBackup, installed);
+      openApp(installed);
+    }
+    throw error;
   }
-  spawnSync("open", ["-a", installed], { stdio: "inherit" });
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  const after = readTaskboardCounts();
-  if (after.projects < snapshot.counts.projects || after.issues < snapshot.counts.issues) {
-    throw new Error(`Historical data verification failed: ${JSON.stringify({ before: snapshot.counts, after })}`);
-  }
-  console.log(JSON.stringify({ version, backupDir: snapshot.backupDir, appBackup, before: snapshot.counts, after }, null, 2));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

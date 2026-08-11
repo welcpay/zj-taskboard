@@ -28,15 +28,35 @@ exit 0
 `;
 }
 
-export function postinstallScript() {
+export function postinstallScript(version) {
   return `#!/bin/sh
 set -eu
 console_user="$(/usr/bin/stat -f '%Su' /dev/console)"
-if [ -n "$console_user" ] && [ "$console_user" != "root" ]; then
-  uid="$(/usr/bin/id -u "$console_user")"
-  /bin/launchctl asuser "$uid" /usr/bin/open -a "/Applications/Codex Taskboard.app"
+if [ -z "$console_user" ] || [ "$console_user" = "root" ] || [ "$console_user" = "loginwindow" ]; then
+  echo "Codex Taskboard requires a logged-in user to reconcile its local service." >&2
+  exit 1
 fi
-exit 0
+
+uid="$(/usr/bin/id -u "$console_user")"
+if ! /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$console_user" /usr/bin/open -a "/Applications/Codex Taskboard.app"; then
+  echo "Failed to launch Codex Taskboard for service reconciliation." >&2
+  exit 1
+fi
+
+attempt=0
+while [ "$attempt" -lt 60 ]; do
+  health="$(/usr/bin/curl --silent --show-error --max-time 2 http://127.0.0.1:47823/health 2>/dev/null || true)"
+  compact_health="$(printf '%s' "$health" | /usr/bin/tr -d '[:space:]')"
+  if printf '%s' "$compact_health" | /usr/bin/grep -Fq '"product":"codex-taskboard"' && \
+     printf '%s' "$compact_health" | /usr/bin/grep -Fq '"daemonVersion":"${version}"'; then
+    exit 0
+  fi
+  attempt=$((attempt + 1))
+  /bin/sleep 1
+done
+
+echo "Codex Taskboard daemon did not become healthy at version ${version}." >&2
+exit 1
 `;
 }
 
@@ -51,7 +71,7 @@ export async function createMacosPkg({ appPath, outputPath, version, runCommand 
     await mkdir(scriptsRoot, { recursive: true });
     await cp(appPath, path.join(payloadRoot, "Applications", APP_NAME), { recursive: true });
     await writeFile(path.join(scriptsRoot, "preinstall"), preinstallScript(), { mode: 0o755 });
-    await writeFile(path.join(scriptsRoot, "postinstall"), postinstallScript(), { mode: 0o755 });
+    await writeFile(path.join(scriptsRoot, "postinstall"), postinstallScript(version), { mode: 0o755 });
     await mkdir(path.dirname(outputPath), { recursive: true });
     runCommand("/usr/bin/pkgbuild", [
       "--root", payloadRoot,
