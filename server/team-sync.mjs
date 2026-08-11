@@ -216,6 +216,7 @@ export function createTeamSyncWorker({
             branchSnapshot: branch.branchSnapshot,
             authorId: branch.authorId,
             deviceId: branch.deviceId,
+            canResolve: branch.canResolve,
             state: branch.state,
           });
         }

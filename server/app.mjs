@@ -1470,6 +1470,40 @@ export function createTaskboardServer(options = {}) {
     }
     return profile;
   }
+  async function activeTeamProfile() {
+    const config = await teamConfig.read();
+    const profile = config.profiles.find((candidate) => candidate.id === config.activeProfileId);
+    if (!profile) throw new ApiError(409, "TEAM_PROFILE_REQUIRED", "An active Team Server profile is required");
+    return profile;
+  }
+  async function teamRemoteJson(profile, pathname, init = {}) {
+    const token = await teamKeychain.get(profile.id);
+    if (!token) throw new ApiError(401, "TEAM_AUTH_REQUIRED", "Team Server access token is required");
+    const upstream = await remoteFetch(new Request(`${profile.url}${pathname}`, {
+      ...init,
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+        ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+        ...init.headers,
+      },
+    }));
+    let body;
+    try {
+      body = await upstream.json();
+    } catch {
+      throw new ApiError(502, "INVALID_TEAM_RESPONSE", "Team Server returned invalid JSON");
+    }
+    if (!upstream.ok) {
+      throw new ApiError(
+        upstream.status,
+        body?.error?.code ?? "TEAM_REQUEST_FAILED",
+        body?.error?.message ?? "Team Server request failed",
+        body?.error?.details,
+      );
+    }
+    return body;
+  }
   const cloudProxy = createCloudProxy({
     configStore: cloudConfig,
     fetch: remoteFetch,
@@ -1896,6 +1930,53 @@ export function createTaskboardServer(options = {}) {
           ? await teamSyncWorker.pause()
           : await teamSyncWorker.resume();
         return sendJson(response, 200, result);
+      }
+
+      if (pathname === "/api/team/branches") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        const profile = await activeTeamProfile();
+        return sendJson(response, 200, { branches: await teamSyncStore.listBranches(profile.id) });
+      }
+
+      const teamBranchRoute = pathname.match(
+        /^\/api\/team\/branches\/([^/]+)(?:\/(keep-main|promote|merge))?$/,
+      );
+      if (teamBranchRoute) {
+        const branchId = decodeURIComponent(teamBranchRoute[1]);
+        const action = teamBranchRoute[2];
+        const profile = await activeTeamProfile();
+        const branch = await teamSyncStore.getBranch(profile.id, branchId);
+        if (!branch) throw new ApiError(404, "TASK_BRANCH_NOT_FOUND", `Task branch '${branchId}' does not exist`);
+        if (!action) {
+          if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+          return sendJson(response, 200, { branch });
+        }
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const input = await readJson(request);
+        const remote = await teamRemoteJson(
+          profile,
+          `/api/task-branches/${encodeURIComponent(branch.serverBranchId)}/${action}`,
+          { method: "POST", body: JSON.stringify(input) },
+        );
+        const resolvedEntity = remote.task ?? remote.comment ?? null;
+        if (resolvedEntity) {
+          database.applyTeamChanges([{
+            entityType: remote.task ? "task" : "comment",
+            entityId: resolvedEntity.id,
+            revision: resolvedEntity.version,
+            operationType: action,
+            snapshot: resolvedEntity,
+          }]);
+        }
+        const resolvedBranch = await teamSyncStore.resolveBranch(profile.id, branchId, {
+          state: remote.branch.state,
+          resolutionSnapshot: resolvedEntity,
+        });
+        return sendJson(response, 200, {
+          branch: resolvedBranch,
+          ...(remote.task ? { task: remote.task } : {}),
+          ...(remote.comment ? { comment: remote.comment } : {}),
+        });
       }
 
       const teamProfileRoute = pathname.match(/^\/api\/team\/profiles\/([^/]+)$/);

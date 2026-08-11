@@ -43,6 +43,7 @@ function operationFromRow(row) {
     change: parseJson(row.change_json),
     userId: row.user_id,
     deviceId: row.device_id,
+    canResolve: Boolean(row.can_resolve),
     retryCount: row.retry_count,
     nextRetryAt: row.next_retry_at,
     lastError: row.last_error,
@@ -274,14 +275,15 @@ export function createTeamSyncStore({ database, now = () => new Date().toISOStri
         INSERT INTO task_branches (
           id, profile_id, server_branch_id, task_id, base_revision,
           current_main_revision, proposed_revision, base_snapshot, main_snapshot,
-          branch_snapshot, author_id, device_id, state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          branch_snapshot, author_id, device_id, can_resolve, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           server_branch_id = excluded.server_branch_id,
           current_main_revision = excluded.current_main_revision,
           proposed_revision = excluded.proposed_revision,
           main_snapshot = excluded.main_snapshot,
           branch_snapshot = excluded.branch_snapshot,
+          can_resolve = excluded.can_resolve,
           state = excluded.state,
           updated_at = excluded.updated_at
       `).run(
@@ -297,6 +299,7 @@ export function createTeamSyncStore({ database, now = () => new Date().toISOStri
         JSON.stringify(remoteValue(input.branchSnapshot)),
         input.authorId,
         input.deviceId,
+        input.canResolve ? 1 : 0,
         input.state ?? "open",
         timestamp,
         timestamp,
@@ -310,6 +313,31 @@ export function createTeamSyncStore({ database, now = () => new Date().toISOStri
         WHERE profile_id = ?
         ORDER BY created_at, id
       `).all(profileId).map(branchFromRow);
+    },
+
+    async getBranch(profileId, id) {
+      const row = raw.prepare(`
+        SELECT * FROM task_branches
+        WHERE profile_id = ? AND (id = ? OR server_branch_id = ?)
+      `).get(profileId, id, id);
+      return row ? branchFromRow(row) : null;
+    },
+
+    async resolveBranch(profileId, id, { state, resolutionSnapshot = null }) {
+      const result = raw.prepare(`
+        UPDATE task_branches
+        SET state = ?, branch_snapshot = COALESCE(?, branch_snapshot), updated_at = ?
+        WHERE profile_id = ? AND (id = ? OR server_branch_id = ?)
+      `).run(
+        state,
+        resolutionSnapshot === null ? null : JSON.stringify(remoteValue(resolutionSnapshot)),
+        now(),
+        profileId,
+        id,
+        id,
+      );
+      if (result.changes !== 1) throw new Error(`Task branch '${id}' does not exist`);
+      return this.getBranch(profileId, id);
     },
   };
 }

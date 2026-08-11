@@ -18,6 +18,11 @@ import type {
   TaskboardMetadata,
   TaskDraft,
   TaskStatus,
+  TaskBranch,
+  TeamConnection,
+  TeamServerConfig,
+  TeamServerProfile,
+  TeamSyncStatus,
   WorkflowCapabilities,
   WorkflowWorkspaceRecord,
 } from "./types";
@@ -585,4 +590,112 @@ export function resolvePersistedAttachmentUrl(value: string): string {
 
 export function markdownIncludesAttachment(markdown: string, attachment: Attachment): boolean {
   return markdown.includes(`api/attachments/${encodeURIComponent(attachment.id)}/content`);
+}
+
+export async function listTeamProfiles(signal?: AbortSignal): Promise<TeamServerConfig> {
+  return request<TeamServerConfig>("/api/team/profiles", { signal });
+}
+
+export async function createTeamProfile(input: {
+  name: string;
+  url: string;
+  organizationId?: string;
+  updateMirror?: boolean;
+}): Promise<TeamServerProfile> {
+  const data = await request<{ profile: TeamServerProfile }>("/api/team/profiles", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return data.profile;
+}
+
+export async function updateTeamProfile(
+  profileId: string,
+  input: Partial<Pick<TeamServerProfile, "name" | "url" | "organizationId" | "updateMirror">>,
+): Promise<TeamServerProfile> {
+  const data = await request<{ profile: TeamServerProfile }>(
+    `/api/team/profiles/${encodeURIComponent(profileId)}`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+  return data.profile;
+}
+
+export async function deleteTeamProfile(profileId: string): Promise<TeamServerConfig> {
+  return request<TeamServerConfig>(`/api/team/profiles/${encodeURIComponent(profileId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function activateTeamProfile(profileId: string): Promise<TeamServerConfig> {
+  return request<TeamServerConfig>(
+    `/api/team/profiles/${encodeURIComponent(profileId)}/activate`,
+    { method: "POST", body: "{}" },
+  );
+}
+
+export async function loginTeamProfile(profileId: string, token: string): Promise<void> {
+  await request(`/api/team/profiles/${encodeURIComponent(profileId)}/login`, {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+export async function logoutTeamProfile(profileId: string): Promise<void> {
+  await request(`/api/team/profiles/${encodeURIComponent(profileId)}/login`, { method: "DELETE" });
+}
+
+export async function testTeamProfile(profileId: string): Promise<TeamConnection> {
+  const data = await request<{ connection: TeamConnection }>(
+    `/api/team/profiles/${encodeURIComponent(profileId)}/test`,
+    { method: "POST", body: "{}" },
+  );
+  return data.connection;
+}
+
+export async function getTeamSyncStatus(signal?: AbortSignal): Promise<TeamSyncStatus> {
+  return request<TeamSyncStatus>("/api/team/sync/status", { signal });
+}
+
+export async function synchronizeTeamNow(): Promise<TeamSyncStatus> {
+  return request<TeamSyncStatus>("/api/team/sync", { method: "POST", body: "{}" });
+}
+
+export async function pauseTeamSync(): Promise<TeamSyncStatus> {
+  return request<TeamSyncStatus>("/api/team/sync/pause", { method: "POST", body: "{}" });
+}
+
+export async function resumeTeamSync(): Promise<TeamSyncStatus> {
+  return request<TeamSyncStatus>("/api/team/sync/resume", { method: "POST", body: "{}" });
+}
+
+export async function listTaskBranches(signal?: AbortSignal): Promise<TaskBranch[]> {
+  const data = await request<{ branches: TaskBranch[] }>("/api/team/branches", { signal });
+  return data.branches;
+}
+
+export async function keepMainTaskBranch(branchId: string): Promise<TaskBranch> {
+  const data = await request<{ branch: TaskBranch }>(
+    `/api/team/branches/${encodeURIComponent(branchId)}/keep-main`,
+    { method: "POST", body: "{}" },
+  );
+  return data.branch;
+}
+
+export async function promoteTaskBranch(branchId: string): Promise<TaskBranch> {
+  const data = await request<{ branch: TaskBranch }>(
+    `/api/team/branches/${encodeURIComponent(branchId)}/promote`,
+    { method: "POST", body: "{}" },
+  );
+  return data.branch;
+}
+
+export async function mergeTaskBranch(
+  branchId: string,
+  snapshot: Record<string, unknown>,
+): Promise<TaskBranch> {
+  const data = await request<{ branch: TaskBranch }>(
+    `/api/team/branches/${encodeURIComponent(branchId)}/merge`,
+    { method: "POST", body: JSON.stringify({ snapshot }) },
+  );
+  return data.branch;
 }

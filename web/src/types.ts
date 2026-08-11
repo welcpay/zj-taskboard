@@ -331,3 +331,65 @@ export interface TaskEvent {
   project?: Project;
   at: string;
 }
+
+export interface TeamServerProfile {
+  id: string;
+  name: string;
+  url: string;
+  organizationId: string | null;
+  updateMirror: boolean;
+  active: boolean;
+  hasToken: boolean;
+  sync: {
+    cursor: string;
+    status: string;
+    pendingOperations: number;
+    lastSuccessfulSyncAt: string | null;
+    paused: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamServerConfig {
+  activeProfileId: string | null;
+  profiles: TeamServerProfile[];
+}
+
+export interface TeamSyncStatus {
+  profileId: string | null;
+  cursor?: string;
+  status: string;
+  paused?: boolean;
+  retryCount?: number;
+  nextRetryAt?: string | null;
+  lastSuccessfulSyncAt?: string | null;
+  lastError?: string | null;
+  pendingOperations: number;
+  branchCount?: number;
+}
+
+export interface TeamConnection {
+  user: { id: string; name: string };
+  role: string;
+  serverVersion: string;
+  minimumClientVersion?: string;
+}
+
+export interface TaskBranch {
+  id: string;
+  serverBranchId: string | null;
+  taskId: string;
+  baseRevision: number;
+  currentMainRevision: number;
+  proposedRevision: number;
+  baseSnapshot: Record<string, unknown>;
+  mainSnapshot: Record<string, unknown>;
+  branchSnapshot: Record<string, unknown>;
+  authorId: string;
+  deviceId: string;
+  canResolve: boolean;
+  state: string;
+  createdAt: string;
+  updatedAt: string;
+}

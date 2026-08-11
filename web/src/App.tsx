@@ -67,6 +67,7 @@ import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskEditor, type NewTaskEditorDraft } from "./components/TaskEditor";
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
+import { TeamServerSettings } from "./components/TeamServerSettings";
 import { taskboardStorage } from "./storage";
 import {
   installEmbeddedExternalLinkHandler,
@@ -616,6 +617,7 @@ export function App() {
   const embedded = host === "codex" || host === "workbuddy";
   const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [teamSettingsOpen, setTeamSettingsOpen] = useState(false);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);
   const language = resolveTaskboardLanguage(
     hostContext?.language ?? query.get("lang") ?? navigator.language,
@@ -2622,6 +2624,15 @@ export function App() {
           <div ref={dragRegionRef} className="workspace-drag-region" aria-hidden="true" />
 
           <div className="header-actions">
+            <button
+              className="icon-button"
+              type="button"
+              onClick={() => setTeamSettingsOpen(true)}
+              aria-label={text("Team Server 设置", "Team Server settings")}
+              title={text("Team Server 设置", "Team Server settings")}
+            >
+              <LinearIcon name="displayOptions" />
+            </button>
             {selectedProjectId && (
               <ProjectAutomationMenu
                 automation={selectedProjectAutomation}
@@ -2645,6 +2656,8 @@ export function App() {
             )}
           </div>
         </header>
+
+        <TeamServerSettings open={teamSettingsOpen} onClose={() => setTeamSettingsOpen(false)} />
 
         {selectedProjectId && !detailTask && <div className="board-toolbar">
           <div className="view-tabs" aria-label={text("看板视图", "Board views")}>

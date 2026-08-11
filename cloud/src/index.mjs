@@ -2654,6 +2654,14 @@ async function assertBranchResolutionAllowed(env, actor, taskId) {
   throw new ApiError(403, "BRANCH_RESOLUTION_FORBIDDEN", "Only the task assignee, creator, or project administrator can resolve this branch");
 }
 
+async function branchForActor(env, actor, row) {
+  const task = await requireTaskRow(env, row.task_id);
+  return {
+    ...branchFromRow(row),
+    canResolve: actor.role === "admin" || task.creator_id === actor.id || task.assignee_id === actor.id,
+  };
+}
+
 function taskSnapshotPatch(snapshot) {
   assertPlainObject(snapshot);
   return Object.fromEntries([
@@ -2776,15 +2784,27 @@ async function routeApi(request, env, actor, url) {
     const rows = await all(env.DB.prepare(`
       SELECT * FROM task_branches WHERE task_id = ? ORDER BY created_at, id
     `).bind(taskId));
-    return json(200, { branches: rows.map(branchFromRow) });
+    return json(200, { branches: await Promise.all(rows.map((row) => branchForActor(env, actor, row))) });
   }
 
-  const branchMatch = pathname.match(/^\/api\/task-branches\/([^/]+)(?:\/(promote|merge))?$/);
+  const branchMatch = pathname.match(/^\/api\/task-branches\/([^/]+)(?:\/(keep-main|promote|merge))?$/);
   if (branchMatch) {
     const branchId = decodePathPart(branchMatch[1], "Task branch id");
     const action = branchMatch[2];
     if (!action && request.method === "GET") {
-      return json(200, { branch: branchFromRow(await requireBranch(env, branchId)) });
+      return json(200, { branch: await branchForActor(env, actor, await requireBranch(env, branchId)) });
+    }
+    if (action === "keep-main" && request.method === "POST") {
+      await readJson(request);
+      const branch = await requireBranch(env, branchId);
+      if (branch.state !== "open") throw new ApiError(409, "TASK_BRANCH_RESOLVED", "Task branch has already been resolved");
+      await assertBranchResolutionAllowed(env, actor, branch.task_id);
+      await env.DB.prepare(`
+        UPDATE task_branches
+        SET state = 'kept_main', resolved_by = ?, updated_at = ?
+        WHERE id = ? AND state = 'open'
+      `).bind(actor.id, now(), branchId).run();
+      return json(200, { branch: await branchForActor(env, actor, await requireBranch(env, branchId)) });
     }
     if (action === "promote" && request.method === "POST") {
       await readJson(request);

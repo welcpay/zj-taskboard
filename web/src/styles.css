@@ -11842,6 +11842,197 @@ kbd {
 :where(:root[data-theme="dark"]) .gantt_task_bg,
 :where(:root[data-theme="dark"]) .gantt_row:not(.is-group),
 :where(:root[data-theme="dark"]) .gantt_task_row:not(.is-group) { background: var(--bg) !important; }
+
+.team-settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(18, 18, 20, 0.4);
+  backdrop-filter: blur(3px);
+}
+
+.team-settings-dialog {
+  width: min(1040px, calc(100vw - 40px));
+  height: min(780px, calc(100vh - 40px));
+  overflow: hidden;
+  border: var(--border-hairline) solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--dialog-shadow);
+  color: var(--text-primary);
+}
+
+.team-settings-header,
+.team-sync-strip,
+.team-section-heading,
+.branch-actions,
+.team-section-actions,
+.team-connection-result {
+  display: flex;
+  align-items: center;
+}
+
+.team-settings-header {
+  height: 58px;
+  justify-content: space-between;
+  padding: 0 18px;
+  border-bottom: var(--border-hairline) solid var(--border);
+}
+
+.team-settings-header h2,
+.team-section-heading h3,
+.task-branch-resolver h3 {
+  margin: 1px 0 0;
+  font-size: 15px;
+  line-height: 20px;
+  letter-spacing: 0;
+}
+
+.team-section-kicker {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 14px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.team-sync-strip {
+  min-height: 42px;
+  gap: 12px;
+  padding: 6px 18px;
+  border-bottom: var(--border-hairline) solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.team-sync-strip strong { color: var(--text-primary); }
+.team-sync-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--text-tertiary); }
+.team-sync-online { background: var(--success); }
+.team-sync-offline,
+.team-sync-invalid_credentials { background: var(--danger); }
+.team-sync-paused { background: var(--warning); }
+.team-sync-actions { display: flex; gap: 4px; margin-left: auto; }
+.team-sync-actions button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); }
+.team-sync-actions button:hover:not(:disabled) { background: var(--surface-active); color: var(--text-primary); }
+
+.team-settings-body {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  height: calc(100% - 100px);
+}
+
+.team-profile-list {
+  overflow: auto;
+  padding: 10px;
+  border-right: var(--border-hairline) solid var(--border);
+  background: var(--sidebar-bg);
+}
+
+.team-profile-list > button {
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.team-profile-list > button:hover,
+.team-profile-list > button.active { background: var(--surface-active); color: var(--text-primary); }
+.team-profile-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-profile-name { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.team-profile-name i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); }
+.team-profile-name i.online { background: var(--success); }
+.team-profile-list p,
+.team-branch-list p { padding: 12px 8px; color: var(--text-tertiary); font-size: 12px; }
+
+.team-settings-content { overflow: auto; padding: 0 20px 28px; }
+.team-settings-section { padding: 20px 0; border-bottom: var(--border-hairline) solid var(--border); }
+.team-section-heading { justify-content: space-between; margin-bottom: 14px; }
+.team-form-grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 12px; }
+.team-form-grid label:not(.team-checkbox),
+.branch-merge-editor { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.team-form-grid input,
+.team-token-row input,
+.branch-merge-editor textarea {
+  width: 100%;
+  min-width: 0;
+  border: var(--border-hairline) solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-primary);
+  font: inherit;
+  outline: none;
+}
+.team-form-grid input,
+.team-token-row input { height: 34px; padding: 0 9px; }
+.team-form-grid input:focus,
+.team-token-row input:focus,
+.branch-merge-editor textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.team-checkbox { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; font-size: 12px; color: var(--text-secondary); }
+.team-section-actions { justify-content: flex-end; margin-top: 14px; }
+.team-section-actions button,
+.team-token-row button,
+.branch-actions button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: var(--border-hairline) solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font: inherit;
+}
+.team-section-actions button.primary,
+.branch-actions button.primary { border-color: var(--accent); background: var(--accent); color: white; }
+.team-token-row { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto auto; gap: 8px; }
+.team-connection-result { gap: 12px; margin-top: 10px; color: var(--text-secondary); font-size: 12px; }
+.team-connection-result svg { color: var(--success); }
+.team-update-source,
+.team-permission-note { margin: 12px 0 0; color: var(--text-tertiary); font-size: 12px; }
+.danger-text { border: 0; background: transparent; color: var(--danger); }
+.team-form-error { margin: 12px 0 0; color: var(--danger); font-size: 12px; }
+
+.team-branch-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.team-branch-list button { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 10px; border: var(--border-hairline) solid var(--border); border-radius: 5px; background: var(--surface-muted); color: var(--text-primary); }
+.team-branch-list small { color: var(--text-tertiary); }
+.task-branch-resolver { margin-top: 16px; border-top: var(--border-hairline) solid var(--border); padding-top: 16px; }
+.task-branch-resolver > header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.team-state { padding: 3px 7px; border-radius: 4px; background: var(--surface-muted); color: var(--text-secondary); font-size: 11px; }
+.branch-comparison { max-height: 260px; overflow: auto; border: var(--border-hairline) solid var(--border); }
+.branch-field-grid { display: grid; grid-template-columns: 120px repeat(3, minmax(150px, 1fr)); }
+.branch-field-grid > * { min-width: 0; margin: 0; padding: 8px; border-right: var(--border-hairline) solid var(--border); border-bottom: var(--border-hairline) solid var(--border); overflow-wrap: anywhere; font-size: 11px; white-space: pre-wrap; }
+.branch-field-grid > *:last-child { border-right: 0; }
+.branch-field-head { color: var(--text-tertiary); background: var(--surface-muted); font-weight: 600; }
+.branch-merge-editor { margin-top: 12px; }
+.branch-merge-editor textarea { min-height: 130px; max-height: 260px; resize: vertical; padding: 9px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.branch-actions { justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.branch-actions button { display: inline-flex; align-items: center; gap: 6px; }
+
+@media (max-width: 719px) {
+  .team-settings-backdrop { padding: 0; }
+  .team-settings-dialog { width: 100vw; height: 100vh; border: 0; border-radius: 0; }
+  .team-sync-strip { overflow-x: auto; white-space: nowrap; }
+  .team-settings-body { grid-template-columns: 1fr; height: calc(100% - 100px); }
+  .team-profile-list { max-height: 150px; border-right: 0; border-bottom: var(--border-hairline) solid var(--border); }
+  .team-form-grid { grid-template-columns: 1fr; }
+  .team-token-row { grid-template-columns: 1fr 1fr; }
+  .team-token-row input { grid-column: 1 / -1; }
+  .branch-field-head { display: none; }
+  .branch-field-grid { grid-template-columns: 90px 1fr; }
+  .branch-field-grid > *:nth-child(3),
+  .branch-field-grid > *:nth-child(4) { grid-column: 2; }
+  .branch-actions { align-items: stretch; flex-direction: column; }
+  .branch-actions button { justify-content: center; }
+}
 .gantt_row:not(.is-group):hover,
 .gantt_task_row:not(.is-group):hover,
 .gantt_row:not(.is-group).is-linked-hover,

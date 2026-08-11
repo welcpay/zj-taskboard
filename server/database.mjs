@@ -567,6 +567,7 @@ export class TaskboardDatabase {
         branch_snapshot TEXT NOT NULL,
         author_id TEXT NOT NULL,
         device_id TEXT NOT NULL,
+        can_resolve INTEGER NOT NULL DEFAULT 0 CHECK (can_resolve IN (0, 1)),
         state TEXT NOT NULL DEFAULT 'open',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -732,6 +733,11 @@ export class TaskboardDatabase {
       this.database.exec("ALTER TABLE attachments ADD COLUMN comment_id TEXT REFERENCES comments(id) ON DELETE CASCADE");
     }
     this.database.exec("CREATE INDEX IF NOT EXISTS attachments_comment_created ON attachments(comment_id, created_at, id)");
+
+    const taskBranchColumns = this.database.prepare("PRAGMA table_info(task_branches)").all();
+    if (!taskBranchColumns.some((column) => column.name === "can_resolve")) {
+      this.database.exec("ALTER TABLE task_branches ADD COLUMN can_resolve INTEGER NOT NULL DEFAULT 0 CHECK (can_resolve IN (0, 1))");
+    }
 
     const timestamp = now();
     this.database.prepare(`
