@@ -498,6 +498,84 @@ export class TaskboardDatabase {
       CREATE INDEX IF NOT EXISTS ai_chat_events_thread_created
         ON ai_chat_events(thread_id, created_at, id);
 
+      CREATE TABLE IF NOT EXISTS team_profiles (
+        id TEXT PRIMARY KEY,
+        server_url TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS team_profiles_one_active
+        ON team_profiles(active)
+        WHERE active = 1;
+
+      CREATE TABLE IF NOT EXISTS team_sync_state (
+        profile_id TEXT PRIMARY KEY REFERENCES team_profiles(id) ON DELETE CASCADE,
+        cursor TEXT NOT NULL DEFAULT '0',
+        status TEXT NOT NULL DEFAULT 'idle',
+        paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+        retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+        next_retry_at TEXT,
+        last_successful_sync_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS team_entity_bases (
+        profile_id TEXT NOT NULL REFERENCES team_profiles(id) ON DELETE CASCADE,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        remote_version INTEGER NOT NULL CHECK (remote_version >= 0),
+        snapshot TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (profile_id, entity_type, entity_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS team_outbox (
+        id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL REFERENCES team_profiles(id) ON DELETE CASCADE,
+        idempotency_key TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        operation_type TEXT NOT NULL,
+        base_version INTEGER NOT NULL CHECK (base_version >= 0),
+        base_snapshot TEXT,
+        change_json TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+        next_retry_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (profile_id, idempotency_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS team_outbox_profile_order
+        ON team_outbox(profile_id, created_at, id);
+
+      CREATE TABLE IF NOT EXISTS task_branches (
+        id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL REFERENCES team_profiles(id) ON DELETE CASCADE,
+        server_branch_id TEXT,
+        task_id TEXT NOT NULL,
+        base_revision INTEGER NOT NULL,
+        current_main_revision INTEGER NOT NULL,
+        proposed_revision INTEGER NOT NULL,
+        base_snapshot TEXT NOT NULL,
+        main_snapshot TEXT NOT NULL,
+        branch_snapshot TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'open',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (profile_id, server_branch_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS task_branches_profile_state
+        ON task_branches(profile_id, state, created_at, id);
+
     `);
 
     const projectColumns = this.database.prepare("PRAGMA table_info(projects)").all();
