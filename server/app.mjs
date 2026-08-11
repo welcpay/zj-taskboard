@@ -28,6 +28,8 @@ import {
 } from "./cloud-proxy.mjs";
 import { ApiError, TaskboardDatabase } from "./database.mjs";
 import { ProjectSummaryService } from "./project-summary.mjs";
+import { createKeychainStore } from "./keychain.mjs";
+import { createTeamConfigStore } from "./team-config.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -1311,6 +1313,7 @@ export function resolveServerOptions(options = {}) {
     databasePath: options.databasePath ?? path.join(dataDirectory, "taskboard.sqlite"),
     attachmentsDirectory: options.attachmentsDirectory ?? path.join(dataDirectory, "attachments"),
     cloudConfigPath: options.cloudConfigPath ?? path.join(dataDirectory, "cloud-companion.json"),
+    teamConfigPath: options.teamConfigPath ?? path.join(dataDirectory, "team-servers.json"),
     clientStoragePath: options.clientStoragePath ?? path.join(dataDirectory, "client-storage.json"),
     staticDirectory: options.staticDirectory ?? path.join(PROJECT_ROOT, "dist", "web"),
     skillPath: options.skillPath ?? path.join(PROJECT_ROOT, "skills", "manage-taskboard", "SKILL.md"),
@@ -1394,9 +1397,33 @@ export function createTaskboardServer(options = {}) {
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
     configPath: resolved.cloudConfigPath,
   });
+  const teamConfig = options.teamConfigStore ?? createTeamConfigStore({
+    configPath: resolved.teamConfigPath,
+  });
+  const teamKeychain = options.teamKeychain ?? createKeychainStore();
+  const remoteFetch = options.remoteFetch ?? globalThis.fetch;
+  async function teamConfigOperation(operation) {
+    try {
+      return await operation();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/does not exist/.test(message)) {
+        throw new ApiError(404, "TEAM_PROFILE_NOT_FOUND", message);
+      }
+      throw new ApiError(400, "INVALID_TEAM_PROFILE", message);
+    }
+  }
+  async function teamProfile(profileId) {
+    const config = await teamConfig.read();
+    const profile = config.profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) {
+      throw new ApiError(404, "TEAM_PROFILE_NOT_FOUND", `Team Server profile '${profileId}' does not exist`);
+    }
+    return profile;
+  }
   const cloudProxy = createCloudProxy({
     configStore: cloudConfig,
-    fetch: options.remoteFetch ?? globalThis.fetch,
+    fetch: remoteFetch,
     resolveDevelopmentContext: async (projectId, context) => {
       if (!context.branch) return null;
       const config = await cloudConfig.read();
@@ -1743,7 +1770,7 @@ export function createTaskboardServer(options = {}) {
       const isLocalAiRoute = pathname === "/api/local/ai" || pathname.startsWith("/api/local/ai/");
       if (isLocalAiRoute) {
         assertAiLoopbackRequest(request);
-      } else if (pathname.startsWith("/api/local/")) {
+      } else if (pathname.startsWith("/api/local/") || pathname.startsWith("/api/team/")) {
         assertLoopbackRequest(request);
       }
       const isMachineCapabilityRoute = pathname === "/api/meta"
@@ -1782,6 +1809,100 @@ export function createTaskboardServer(options = {}) {
           });
         }
         return sendJson(response, 200, { status: "ok" });
+      }
+
+      if (pathname === "/api/team/profiles") {
+        if (request.method === "GET") {
+          const config = await teamConfig.read();
+          const profiles = await Promise.all(config.profiles.map(async (profile) => ({
+            ...profile,
+            hasToken: Boolean(await teamKeychain.get(profile.id)),
+          })));
+          return sendJson(response, 200, { ...config, profiles });
+        }
+        if (request.method === "POST") {
+          const body = await readJson(request);
+          const profile = await teamConfigOperation(() => teamConfig.create(body));
+          return sendJson(response, 201, { profile: { ...profile, hasToken: false } });
+        }
+        return methodNotAllowed(response, ["GET", "POST"]);
+      }
+
+      const teamProfileRoute = pathname.match(/^\/api\/team\/profiles\/([^/]+)$/);
+      if (teamProfileRoute) {
+        const profileId = decodeURIComponent(teamProfileRoute[1]);
+        if (request.method === "PATCH") {
+          const body = await readJson(request);
+          const profile = await teamConfigOperation(() => teamConfig.update(profileId, body));
+          return sendJson(response, 200, {
+            profile: { ...profile, hasToken: Boolean(await teamKeychain.get(profileId)) },
+          });
+        }
+        if (request.method === "DELETE") {
+          await teamKeychain.delete(profileId);
+          const config = await teamConfigOperation(() => teamConfig.delete(profileId));
+          return sendJson(response, 200, config);
+        }
+        return methodNotAllowed(response, ["PATCH", "DELETE"]);
+      }
+
+      const teamProfileActionRoute = pathname.match(
+        /^\/api\/team\/profiles\/([^/]+)\/(activate|login|test)$/,
+      );
+      if (teamProfileActionRoute) {
+        const profileId = decodeURIComponent(teamProfileActionRoute[1]);
+        const action = teamProfileActionRoute[2];
+        if (action === "activate") {
+          if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+          return sendJson(
+            response,
+            200,
+            await teamConfigOperation(() => teamConfig.activate(profileId)),
+          );
+        }
+        if (action === "login") {
+          if (request.method === "POST") {
+            await teamProfile(profileId);
+            const body = await readJson(request);
+            await teamKeychain.set(profileId, stringField(body.token, "token", {
+              required: true,
+              maxLength: 4096,
+            }));
+            return sendJson(response, 200, { profileId, authenticated: true });
+          }
+          if (request.method === "DELETE") {
+            await teamProfile(profileId);
+            await teamKeychain.delete(profileId);
+            return sendJson(response, 200, { profileId, authenticated: false });
+          }
+          return methodNotAllowed(response, ["POST", "DELETE"]);
+        }
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const profile = await teamProfile(profileId);
+        const token = await teamKeychain.get(profileId);
+        if (!token) {
+          throw new ApiError(401, "TEAM_AUTH_REQUIRED", "Team Server access token is required");
+        }
+        const upstream = await remoteFetch(new Request(`${profile.url}/api/team/session`, {
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${token}`,
+          },
+        }));
+        let connection;
+        try {
+          connection = await upstream.json();
+        } catch {
+          throw new ApiError(502, "INVALID_TEAM_RESPONSE", "Team Server returned invalid JSON");
+        }
+        if (!upstream.ok) {
+          throw new ApiError(
+            upstream.status,
+            connection?.error?.code ?? "TEAM_CONNECTION_FAILED",
+            connection?.error?.message ?? "Team Server connection test failed",
+          );
+        }
+        return sendJson(response, 200, { profileId, connection });
       }
 
       if (pathname === "/api/client-storage") {

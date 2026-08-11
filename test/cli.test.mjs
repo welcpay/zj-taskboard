@@ -98,6 +98,77 @@ test("ordinary taskctl requests ignore legacy launcher runtime descriptors", asy
   assert.deepEqual(calls, ["http://127.0.0.1:47823/api/projects"]);
 });
 
+test("team commands manage profiles and Keychain-backed authentication through the local daemon", async () => {
+  const calls = [];
+  const resultFor = (payload = {}) => response(payload);
+  const fetchImplementation = async (url, init) => {
+    calls.push({ url, init, body: init.body ? JSON.parse(init.body) : undefined });
+    return resultFor({ ok: true });
+  };
+
+  const commands = [
+    [
+      ["team", "list"],
+      "GET",
+      "/api/team/profiles",
+      undefined,
+    ],
+    [
+      ["team", "create", "--name", "Alpha", "--url", "https://alpha.example.test", "--organization", "org-alpha", "--update-mirror"],
+      "POST",
+      "/api/team/profiles",
+      { name: "Alpha", url: "https://alpha.example.test", organizationId: "org-alpha", updateMirror: true },
+    ],
+    [
+      ["team", "update", "profile-alpha", "--name", "Alpha 2", "--url", "https://alpha.example.test/v2"],
+      "PATCH",
+      "/api/team/profiles/profile-alpha",
+      { name: "Alpha 2", url: "https://alpha.example.test/v2" },
+    ],
+    [
+      ["team", "activate", "profile-alpha"],
+      "POST",
+      "/api/team/profiles/profile-alpha/activate",
+      {},
+    ],
+    [
+      ["team", "login", "profile-alpha", "--token", "token-alpha"],
+      "POST",
+      "/api/team/profiles/profile-alpha/login",
+      { token: "token-alpha" },
+    ],
+    [
+      ["team", "test", "profile-alpha"],
+      "POST",
+      "/api/team/profiles/profile-alpha/test",
+      {},
+    ],
+    [
+      ["team", "logout", "profile-alpha"],
+      "DELETE",
+      "/api/team/profiles/profile-alpha/login",
+      undefined,
+    ],
+    [
+      ["team", "delete", "profile-alpha"],
+      "DELETE",
+      "/api/team/profiles/profile-alpha",
+      undefined,
+    ],
+  ];
+
+  for (const [argv] of commands) {
+    const result = await run(argv, fetchImplementation);
+    assert.equal(result.exitCode, 0, argv.join(" "));
+  }
+
+  assert.deepEqual(calls.map(({ url, init, body }) => ({
+    method: init.method,
+    pathname: url.pathname,
+    body,
+  })), commands.map(([, method, pathname, body]) => ({ method, pathname, body })));
+});
+
 test("project create sends id, name, and an absolute workspace path", async () => {
   let requestBody;
   const result = await run(

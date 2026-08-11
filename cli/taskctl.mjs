@@ -16,7 +16,7 @@ import {
 export const SCHEMA_VERSION = 2;
 export const DEFAULT_API_URL = "http://127.0.0.1:47823";
 
-const BOOLEAN_OPTIONS = new Set(["json"]);
+const BOOLEAN_OPTIONS = new Set(["json", "update-mirror"]);
 
 const COMMAND_OPTIONS = new Map([
   ["project list", new Set(["json"])],
@@ -25,6 +25,14 @@ const COMMAND_OPTIONS = new Map([
   ["cloud login", new Set(["url", "actor-name", "json"])],
   ["cloud status", new Set(["json"])],
   ["cloud logout", new Set(["json"])],
+  ["team list", new Set(["json"])],
+  ["team create", new Set(["name", "url", "organization", "update-mirror", "json"])],
+  ["team update", new Set(["name", "url", "organization", "update-mirror", "json"])],
+  ["team activate", new Set(["json"])],
+  ["team delete", new Set(["json"])],
+  ["team login", new Set(["token", "json"])],
+  ["team logout", new Set(["json"])],
+  ["team test", new Set(["json"])],
   ["issue list", new Set(["project", "status", "archived", "json"])],
   ["issue get", new Set(["json"])],
   [
@@ -183,13 +191,15 @@ async function execute(parsed, overrides) {
   const allowedOptions = COMMAND_OPTIONS.get(command);
   if (!allowedOptions) {
     throw usageError(
-      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download/upload, context current",
+      "Expected one of: project list/create/map, cloud login/status/logout, team list/create/update/activate/delete/login/logout/test, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download/upload, context current",
     );
   }
   validateOptions(parsed.options, allowedOptions);
 
   const env = overrides.env ?? process.env;
-  const usesCompanionControl = command.startsWith("cloud ") || command === "project map";
+  const usesCompanionControl = command.startsWith("cloud ")
+    || command.startsWith("team ")
+    || command === "project map";
   const api = createApiClient(overrides, {
     baseUrl: usesCompanionControl || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
       ? resolveCompanionUrl(env)
@@ -237,6 +247,49 @@ async function execute(parsed, overrides) {
     case "cloud logout":
       expectOperandCount(parsed, 0);
       return api.request("DELETE", "/api/local/cloud-session");
+    case "team list":
+      expectOperandCount(parsed, 0);
+      return api.request("GET", "/api/team/profiles");
+    case "team create":
+      expectOperandCount(parsed, 0);
+      return api.request("POST", "/api/team/profiles", {
+        name: requiredOption(parsed.options, "name"),
+        url: requiredOption(parsed.options, "url"),
+        ...optionalField("organizationId", parsed.options.organization),
+        ...optionalField("updateMirror", parsed.options["update-mirror"]),
+      });
+    case "team update":
+      expectOperandCount(parsed, 1);
+      if (!["name", "url", "organization", "update-mirror"].some((name) => parsed.options[name] !== undefined)) {
+        throw usageError("team update requires at least one field to update");
+      }
+      return api.request(
+        "PATCH",
+        `/api/team/profiles/${encodeURIComponent(parsed.operands[0])}`,
+        {
+          ...optionalField("name", parsed.options.name),
+          ...optionalField("url", parsed.options.url),
+          ...optionalField("organizationId", parsed.options.organization),
+          ...optionalField("updateMirror", parsed.options["update-mirror"]),
+        },
+      );
+    case "team activate":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `/api/team/profiles/${encodeURIComponent(parsed.operands[0])}/activate`, {});
+    case "team delete":
+      expectOperandCount(parsed, 1);
+      return api.request("DELETE", `/api/team/profiles/${encodeURIComponent(parsed.operands[0])}`);
+    case "team login":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `/api/team/profiles/${encodeURIComponent(parsed.operands[0])}/login`, {
+        token: requiredOption(parsed.options, "token"),
+      });
+    case "team logout":
+      expectOperandCount(parsed, 1);
+      return api.request("DELETE", `/api/team/profiles/${encodeURIComponent(parsed.operands[0])}/login`);
+    case "team test":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `/api/team/profiles/${encodeURIComponent(parsed.operands[0])}/test`, {});
     case "issue list":
       expectOperandCount(parsed, 0);
       return listIssues(api, parsed.options);
