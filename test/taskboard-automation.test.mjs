@@ -5,6 +5,7 @@ import {
   buildTaskboardAutomationName,
   buildTaskboardAutomationPrompt,
   buildTaskboardAutomationSpec,
+  shouldActivateTaskboardAutomation,
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
 } from "../shared/taskboard-automation.mjs";
@@ -26,10 +27,27 @@ const baseRequest = {
   skillPath: "/Users/example/taskboard/skills/manage-taskboard/SKILL.md",
   enabledByUser: true,
   quotaAware: false,
-  intervalMinutes: 5,
+  intervalMinutes: 60,
   model: "gpt-5.5",
   reasoningEffort: "high",
 };
+
+test("automatic claims stay paused until Taskboard has a todo issue", () => {
+  assert.equal(shouldActivateTaskboardAutomation({
+    enabledByUser: true,
+    intervalMinutes: 5,
+    quotaAware: false,
+    hasTodo: false,
+    quotaState: null,
+  }), false);
+  assert.equal(shouldActivateTaskboardAutomation({
+    enabledByUser: true,
+    intervalMinutes: 5,
+    quotaAware: false,
+    hasTodo: true,
+    quotaState: null,
+  }), true);
+});
 
 test("the automation model catalog matches Codex and normalizes unsupported efforts", () => {
   assert.deepEqual(AUTOMATION_MODELS, [
@@ -73,7 +91,7 @@ test("the automation model catalog matches Codex and normalizes unsupported effo
 
   const current = {
     status: "ACTIVE",
-    intervalMinutes: 5,
+    intervalMinutes: 60,
     model: "gpt-5.6-sol",
     reasoningEffort: "ultra",
   };
@@ -103,12 +121,12 @@ test("the automation host request accepts only whitelisted project automation op
     null,
   );
   assert.deepEqual(
-    parseTaskboardAutomationHostRequest({ ...baseRequest, intervalMinutes: 10 }),
-    { ...baseRequest, intervalMinutes: 10 },
+    parseTaskboardAutomationHostRequest({ ...baseRequest, intervalMinutes: 30 }),
+    { ...baseRequest, intervalMinutes: 30 },
   );
-  assert.equal(
+  assert.deepEqual(
     parseTaskboardAutomationHostRequest({ ...baseRequest, intervalMinutes: 7 }),
-    null,
+    { ...baseRequest, intervalMinutes: 7 },
   );
   assert.equal(
     parseTaskboardAutomationHostRequest({
@@ -135,7 +153,7 @@ test("the automation host request accepts only whitelisted project automation op
     null,
   );
   const allEfforts = ["low", "medium", "high", "xhigh", "max", "ultra"];
-  for (const intervalMinutes of [5, 10, 15, 30, 60]) {
+  for (const intervalMinutes of [0, 1, 5, 10, 15, 30, 60]) {
     for (const model of AUTOMATION_MODELS) {
       for (const effort of allEfforts) {
         assert.equal(
@@ -150,6 +168,13 @@ test("the automation host request accepts only whitelisted project automation op
         );
       }
     }
+  }
+  for (const intervalMinutes of [-1, 61, 1.5, "5"]) {
+    assert.equal(
+      parseTaskboardAutomationHostRequest({ ...baseRequest, intervalMinutes }),
+      null,
+      `${intervalMinutes} is outside the supported integer range`,
+    );
   }
   assert.equal(isSupportedModelEffort("gpt-5.6-luna", "max"), true);
   assert.equal(isSupportedModelEffort("gpt-5.6-luna", "ultra"), false);
@@ -172,10 +197,16 @@ test("the stable name and generated prompt are project-scoped and encode the cla
   );
   assert.match(prompt, /\[\$manage-taskboard\]\([^)]*\) e-taskboard /);
   assert.match(prompt, /PPT Skill/);
-  assert.match(prompt, /每 5 分钟检查/);
+  assert.match(prompt, /每 60 分钟检查/);
   assert.match(prompt, /ppt-skill/);
   assert.match(prompt, /\/Users\/example\/Documents\/ppt-skill/);
   assert.match(prompt, /每次仅处理一个 todo/);
+  assert.match(prompt, /没有 todo.*归档本次 Codex 任务/);
+  assert.match(prompt, /必须把重命名作为下一步动作/);
+  assert.match(prompt, /set_thread_title/);
+  assert.match(prompt, /不要只在回复文字中写标题/);
+  assert.match(prompt, /automation-locks.*ppt-skill\.lock/);
+  assert.match(prompt, /上一轮仍在执行.*归档当前 Codex 任务/);
   assert.match(prompt, /issue get/);
   assert.match(prompt, /comment list/);
   assert.match(prompt, /最新 version/);
@@ -196,7 +227,7 @@ test("the generated cron spec uses the selected whitelisted local Codex options"
     localEnvironmentConfigPath: null,
     model: "gpt-5.5",
     reasoningEffort: "high",
-    rrule: "RRULE:FREQ=MINUTELY;INTERVAL=5",
+    rrule: "RRULE:FREQ=MINUTELY;INTERVAL=60",
   });
   assert.deepEqual(buildTaskboardAutomationSpec({
     ...baseRequest,
@@ -403,7 +434,7 @@ test("pause never creates and list returns only sanitized matching project autom
       status: "ACTIVE",
       model: "gpt-5.5",
       reasoningEffort: "high",
-      rrule: "RRULE:FREQ=MINUTELY;INTERVAL=5",
+      rrule: "RRULE:FREQ=MINUTELY;INTERVAL=60",
     }],
   });
 

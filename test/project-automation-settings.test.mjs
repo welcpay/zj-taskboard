@@ -7,6 +7,10 @@ const menuSource = await readFile(
   new URL("../web/src/components/ProjectAutomationMenu.tsx", import.meta.url),
   "utf8",
 );
+const selectSource = await readFile(
+  new URL("../web/src/components/AutomationSelect.tsx", import.meta.url),
+  "utf8",
+).catch(() => "");
 const iconSource = await readFile(
   new URL("../web/src/components/TaskboardIcon.tsx", import.meta.url),
   "utf8",
@@ -26,8 +30,8 @@ test("project automation state is device-local and scoped by taskboard project",
   assert.match(appSource, /type ProjectAutomationStatus = "ACTIVE" \| "PAUSED"/);
   assert.match(appSource, /automationId\?: string/);
   assert.match(appSource, /codexProjectId: string/);
-  assert.match(appSource, /type AutomationIntervalMinutes = 5 \| 10 \| 15 \| 30 \| 60/);
-  assert.match(appSource, /DEFAULT_AUTOMATION_OPTIONS[\s\S]*?model: "gpt-5\.5"[\s\S]*?reasoningEffort: "high"/);
+  assert.match(appSource, /type AutomationIntervalMinutes = number/);
+  assert.match(appSource, /DEFAULT_AUTOMATION_OPTIONS[\s\S]*?intervalMinutes: 60[\s\S]*?model: "gpt-5\.5"[\s\S]*?reasoningEffort: "high"/);
   assert.match(appSource, /taskboardStorage\.getItem\(PROJECT_AUTOMATIONS_KEY\)/);
   assert.match(appSource, /taskboardStorage\.setItem\(PROJECT_AUTOMATIONS_KEY, JSON\.stringify\(next\)\)/);
   assert.match(appSource, /projectAutomations\[selectedProjectId\]/);
@@ -64,8 +68,11 @@ test("the project navigation automation menu owns the icon, fields, and accessib
   assert.match(menuSource, /自动认领/);
   assert.match(menuSource, /status === "ACTIVE" \? "自动认领中" : "自动化"/);
   assert.doesNotMatch(menuSource, /已开启自动认领|自动认领未开启/);
-  assert.match(menuSource, /自动认领开关/);
+  assert.match(menuSource, /自动认领/);
   assert.match(menuSource, /5, 10, 15, 30, 60/);
+  assert.match(menuSource, /min=\{0\}/);
+  assert.match(menuSource, /max=\{60\}/);
+  assert.match(menuSource, /0 表示暂停/);
   assert.match(menuSource, /AUTOMATION_MODELS\.map/);
   assert.match(menuSource, /EFFORT_LABELS\[effort\]/);
   assert.match(menuSource, /createPortal/);
@@ -77,6 +84,26 @@ test("the project navigation automation menu owns the icon, fields, and accessib
   assert.match(appSource, /<ProjectAutomationMenu[\s\S]*?<button[\s\S]*?header-create-button/);
   assert.doesNotMatch(appSource, /toolbar-connection/);
   assert.match(appSource, /仅本地任务面板可用/);
+});
+
+test("automation settings use the confirmed summary and segmented B layout", () => {
+  assert.match(menuSource, /project-automation-summary/);
+  assert.match(menuSource, /automation-interval-segments/);
+  assert.match(menuSource, /INTERVAL_PRESETS\.map\(\(minutes\)/);
+  assert.match(menuSource, />其他<\/button>/);
+  assert.match(menuSource, /automation-model-grid/);
+  assert.match(menuSource, /project-automation-secondary/);
+});
+
+test("automation choices use an in-panel accessible listbox", () => {
+  assert.doesNotMatch(menuSource, /<select/);
+  assert.equal(menuSource.match(/<AutomationSelect/g)?.length, 2);
+  assert.match(selectSource, /role="listbox"/);
+  assert.match(selectSource, /role="option"/);
+  assert.match(selectSource, /event\.key === "ArrowDown"/);
+  assert.match(selectSource, /event\.key === "ArrowUp"/);
+  assert.match(selectSource, /event\.key === "Enter" \|\| event\.key === " "/);
+  assert.match(selectSource, /event\.key === "Escape"/);
 });
 
 test("automation status uses the exported Taskboard play and pause icon assets", () => {
@@ -97,14 +124,14 @@ test("the automation menu reuses the board switches and keeps form focus chrome 
   assert.match(menuSource, /className=\{`board-setting-switch\$\{draft\.quotaAware \? " is-on" : ""\}`\}/);
   assert.match(menuSource, /aria-checked=\{draft\.quotaAware\}/);
   assert.doesNotMatch(menuSource, /type="checkbox"/);
-  assert.match(styles, /\.project-automation-field select:focus-visible\s*\{[^}]*outline:\s*0;[^}]*box-shadow:\s*none;/s);
+  assert.match(styles, /\.automation-select-trigger:focus-visible\s*\{[^}]*outline:\s*0;/s);
   assert.doesNotMatch(styles, /\.project-automation-switch input:focus-visible/);
 });
 
 test("unavailable automation state has one notice, clears stale errors, and cannot change", () => {
   assert.match(menuSource, /error && error !== unavailableReason/);
   assert.match(menuSource, /const disabled = pending \|\| Boolean\(unavailableReason\)/);
-  assert.equal(menuSource.match(/disabled=\{disabled\}/g)?.length, 5);
+  assert.equal(menuSource.match(/disabled=\{disabled\}/g)?.length, 7);
   const reconcileSource = appSource.slice(
     appSource.indexOf("const reconcileProjectAutomation"),
     appSource.indexOf("const saveProjectAutomation"),
@@ -120,9 +147,9 @@ test("automation changes submit immediately with model-specific effort normaliza
   assert.match(menuSource, /onChange: \(options: AutomationOptions\) => void/);
   assert.match(menuSource, /const disabled = pending \|\| Boolean\(unavailableReason\)/);
   assert.match(menuSource, /const submitChange = \(next: AutomationOptions\) => \{[\s\S]*?setDraft\(next\);[\s\S]*?onChange\(next\);[\s\S]*?\}/);
-  assert.match(menuSource, /submitChange\(withAutomationModel\(draft, event\.target\.value as AutomationModel\)\)/);
+  assert.match(menuSource, /submitChange\(withAutomationModel\(draft, model as AutomationModel\)\)/);
   assert.match(menuSource, /getAutomationModel\(draft\.model\)\.efforts\.map/);
-  assert.match(menuSource, /<option key=\{effort\} value=\{effort\}>\{EFFORT_LABELS\[effort\]\}<\/option>/);
+  assert.match(menuSource, /value: effort,[\s\S]*?label: EFFORT_LABELS\[effort\]/);
   assert.match(menuSource, /low: "轻度"/);
   assert.match(menuSource, /xhigh: "极高 \(xhigh\)"/);
   assert.match(menuSource, /max: "最高"/);

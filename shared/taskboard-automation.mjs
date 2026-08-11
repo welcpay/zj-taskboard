@@ -2,7 +2,6 @@ import path from "node:path";
 import { isSupportedModelEffort } from "./taskboard-automation-options.mjs";
 
 const AUTOMATION_OPERATIONS = new Set(["ensure-active", "pause", "list", "apply-policy"]);
-const INTERVAL_MINUTES = new Set([5, 10, 15, 30, 60]);
 const HOST_REQUEST_FIELDS = new Set([
   "id",
   "action",
@@ -30,7 +29,7 @@ export function parseTaskboardAutomationHostRequest(value) {
   if (!validProjectId(value.taskboardProjectId)) return null;
   if (!validText(value.codexProjectId, 256) || !validText(value.projectName, 200)) return null;
   if (!validAbsolutePath(value.workspacePath) || !validAbsolutePath(value.skillPath)) return null;
-  if (!INTERVAL_MINUTES.has(value.intervalMinutes)) return null;
+  if (!validIntervalMinutes(value.intervalMinutes)) return null;
   if (!isSupportedModelEffort(value.model, value.reasoningEffort)) return null;
   if (value.automationId !== undefined && !validText(value.automationId, 256)) return null;
   if (typeof value.enabledByUser !== "boolean" || typeof value.quotaAware !== "boolean") return null;
@@ -59,16 +58,24 @@ export function buildTaskboardAutomationName(request) {
 }
 
 export function buildTaskboardAutomationPrompt(request) {
+  const lockPath = path.join(
+    "~/Library/Application Support/Codex Taskboard/automation-locks",
+    `${request.taskboardProjectId}.lock`,
+  );
   return [
     `[$manage-taskboard](${request.skillPath}) e-taskboard 每 ${request.intervalMinutes} 分钟检查任务面板中的「${request.projectName}」项目（项目 ID：${request.taskboardProjectId}，项目目录：${request.workspacePath}）。`,
+    "若当前没有 todo，立即归档本次 Codex 任务并结束，不要在任务列表保留空的自动认领聊天。",
+    `开始读取或修改议题前，先用 mkdir 原子创建项目专属锁目录 ${lockPath}。若目录已存在，说明上一轮仍在执行：立即归档当前 Codex 任务并结束，不得读取、认领或修改议题。只有成功持有锁后才可继续，并在正常结束或失败退出前删除自己持有的锁目录。`,
     "每次仅处理一个 todo：先用 issue get 读取最新议题内容，并用 comment list 读取全部评论，确认是否包含已完成后被打回的返工要求。",
     "认领时使用最新 version 将议题移动到 in_progress；若发生版本冲突或最新状态已变化，立即跳过，避免多个 Agent 抢同一任务。",
+    "认领成功后，必须把重命名作为下一步动作：立即调用 Codex 的 set_thread_title 工具，将当前任务标题设置为《YYYY-MM-DD HH:mm 议题名称 自动认领》；不要只在回复文字中写标题。时间使用 Asia/Shanghai 时区的实际认领时间，议题名称使用刚刚认领议题的完整标题。若 set_thread_title 调用失败，先重试一次，再继续任何实现工作。",
     "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
     "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用最新 version 将议题移动到 in_review；不要直接标记为 done。",
   ].join("\n");
 }
 
 export function buildTaskboardAutomationSpec(request) {
+  const intervalMinutes = request.intervalMinutes === 0 ? 60 : request.intervalMinutes;
   return {
     kind: "cron",
     name: buildTaskboardAutomationName(request),
@@ -78,8 +85,21 @@ export function buildTaskboardAutomationSpec(request) {
     localEnvironmentConfigPath: null,
     model: request.model,
     reasoningEffort: request.reasoningEffort,
-    rrule: `RRULE:FREQ=MINUTELY;INTERVAL=${request.intervalMinutes}`,
+    rrule: `RRULE:FREQ=MINUTELY;INTERVAL=${intervalMinutes}`,
   };
+}
+
+export function shouldActivateTaskboardAutomation({
+  enabledByUser,
+  intervalMinutes,
+  quotaAware,
+  hasTodo,
+  quotaState,
+}) {
+  return enabledByUser
+    && intervalMinutes > 0
+    && hasTodo
+    && (!quotaAware || quotaState === "available");
 }
 
 export async function reconcileTaskboardAutomation(request, rpc) {
@@ -141,8 +161,15 @@ function sanitizeAutomation(item) {
 }
 
 function validRrule(value) {
-  return typeof value === "string"
-    && /^RRULE:FREQ=MINUTELY;INTERVAL=(5|10|15|30|60)$/.test(value);
+  if (typeof value !== "string") return false;
+  const match = /^RRULE:FREQ=MINUTELY;INTERVAL=(\d+)$/.exec(value);
+  return match !== null && validIntervalMinutes(Number(match[1]), { allowPause: false });
+}
+
+function validIntervalMinutes(value, { allowPause = true } = {}) {
+  return Number.isInteger(value)
+    && value >= (allowPause ? 0 : 1)
+    && value <= 60;
 }
 
 function automationMatchesSpec(item, spec, status) {

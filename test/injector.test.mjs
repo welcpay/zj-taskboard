@@ -52,6 +52,10 @@ test("the CDP bridge accepts service ensure and native instruction composer pref
   assert.match(source, /withoutTaskboardLauncherEnvironment\(process\.env\)/);
 });
 
+test("the CDP bridge submits only after the composer instruction is verified", () => {
+  assert.match(source, /if \(!request\.autoSubmit\)[\s\S]*Input\.dispatchKeyEvent[\s\S]*Input\.dispatchKeyEvent/);
+});
+
 test("the CDP bridge exposes only the fixed Taskboard automation operations", () => {
   assert.match(source, /parseTaskboardAutomationHostRequest/);
   assert.match(source, /reconcileTaskboardAutomation/);
@@ -78,6 +82,13 @@ test("the package injection command remains resident for tab-triggered recovery"
   assert.match(source, /port: defaultCodexDebuggingPort/);
   assert.match(source, /--startup-token/);
   assert.match(source, /__codexTaskboardHostStartupTokenV1/);
+});
+
+test("a packaged managed session ends instead of idling after Codex exits", () => {
+  assert.match(source, /let attachedOnce = firstResults\.length > 0/);
+  assert.match(source, /attachedOnce = true/);
+  assert.match(source, /shouldEndManagedSession\(\{/);
+  assert.doesNotMatch(source, /Waiting for Codex after normal exit; open Codex Taskboard again/);
 });
 
 test("attach reconciles the renderer against a hashed current injection source", () => {

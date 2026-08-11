@@ -46,7 +46,6 @@ struct LauncherPidRecord {
 struct LauncherState {
     child: Mutex<Option<u32>>,
     snapshot: Mutex<LauncherSnapshot>,
-    intentional_stop: AtomicBool,
     update_in_progress: AtomicBool,
     generation: AtomicU64,
     lifecycle: Mutex<()>,
@@ -75,7 +74,6 @@ impl LauncherState {
                 app_path: None,
                 child_pid: None,
             }),
-            intentional_stop: AtomicBool::new(false),
             update_in_progress: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
@@ -244,7 +242,6 @@ fn clear_pid_record(state: &LauncherState, pid: u32) {
 
 fn stop_managed_child_locked(app: &AppHandle, state: &Arc<LauncherState>) {
     state.generation.fetch_add(1, Ordering::SeqCst);
-    state.intentional_stop.store(true, Ordering::SeqCst);
     if let Some(pid) = state.child.lock().unwrap().take() {
         append_log(state, &format!("Stopping launcher child {pid}"));
         terminate_process_group(pid);
@@ -316,7 +313,6 @@ fn start_launcher_locked(
         .join("node");
     stop_recorded_child(state);
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    state.intentional_stop.store(false, Ordering::SeqCst);
     update_snapshot(app, state, |snapshot| {
         snapshot.phase = "starting".into();
         snapshot.message = "正在启动任务面板服务…".into();
@@ -415,35 +411,12 @@ fn start_launcher_locked(
         *current_child = None;
         drop(current_child);
         clear_pid_record(&event_state, pid);
-        let intentional = event_state.intentional_stop.load(Ordering::SeqCst);
         update_snapshot(&event_app, &event_state, |snapshot| {
             snapshot.child_pid = None;
-            if !intentional {
-                snapshot.phase = "error".into();
-                snapshot.message = "任务面板进程已退出，正在恢复…".into();
-            }
+            snapshot.phase = "stopped".into();
+            snapshot.message = "Codex 已退出，任务面板服务已停止。".into();
         });
-        if intentional {
-            return;
-        }
-        thread::sleep(Duration::from_secs(2));
-        if event_state.intentional_stop.load(Ordering::SeqCst)
-            || event_state.generation.load(Ordering::SeqCst) != generation
-        {
-            return;
-        }
-        if let Err(error) = start_launcher(&event_app, &event_state) {
-            append_log(&event_state, &format!("Launcher recovery failed: {error}"));
-            update_snapshot(&event_app, &event_state, |snapshot| {
-                snapshot.phase = "error".into();
-                snapshot.message = error.clone();
-            });
-            show_error_dialog(
-                &event_app,
-                "Codex Taskboard 恢复失败",
-                &format!("任务面板进程无法恢复：{error}\n\n请重新打开 App。"),
-            );
-        }
+        event_app.exit(0);
     });
     Ok(snapshot)
 }

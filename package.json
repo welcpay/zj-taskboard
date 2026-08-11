@@ -1,6 +1,6 @@
 {
   "name": "codex-taskboard",
-  "version": "0.2.0",
+  "version": "0.2.5",
   "private": true,
   "type": "module",
   "engines": {
@@ -17,6 +17,9 @@
     "app:prepare": "npm run build:web && node scripts/prepare-tauri-app.mjs",
     "app:dev": "npm run app:prepare && tauri dev",
     "app:build": "npm run app:prepare -- --target universal-apple-darwin && CI=true tauri build --target universal-apple-darwin --bundles app,dmg",
+    "app:release": "node scripts/release-app.mjs",
+    "app:create-dmg": "node scripts/create-local-dmg.mjs",
+    "app:install-local": "node scripts/install-local-release.mjs",
     "app:preflight": "node scripts/preflight-macos-app.mjs",
     "app:verify-packaged-taskctl": "node scripts/verify-packaged-taskctl.mjs",
     "app:verify-release": "node scripts/verify-macos-release.mjs",

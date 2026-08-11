@@ -79,6 +79,8 @@ interface BoardColumnProps {
   onEdit: (task: Task) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
   onComplete: (task: Task) => void;
+  onRunNow: (task: Task) => void;
+  runningNowTaskId: string | null;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
@@ -105,6 +107,8 @@ export function BoardColumn({
   onEdit,
   onUpdate,
   onComplete,
+  onRunNow,
+  runningNowTaskId,
   onContextMenu,
   onDragStart,
   onDragEnd,
@@ -212,6 +216,8 @@ export function BoardColumn({
               onEdit={onEdit}
               onUpdate={onUpdate}
               onComplete={onComplete}
+              onRunNow={onRunNow}
+              runNowPending={runningNowTaskId === task.id}
               onContextMenu={onContextMenu}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}

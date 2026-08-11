@@ -1,6 +1,13 @@
 const HOST_REQUEST_ERROR = "自动认领配置暂时无法应用，请刷新后重试";
 const AUTOMATION_SCHEMA_DIAGNOSTIC = "AUTOMATION_SCHEMA_MISMATCH";
 
+export function shouldEndManagedSession({ launched, attachedOnce, browserConnected }) {
+  void launched;
+  void attachedOnce;
+  void browserConnected;
+  return false;
+}
+
 function parseHostRequest(payload, parseAutomationRequest) {
   if (typeof payload !== "string" || payload.length > 4_096) {
     return { id: null, request: null, error: HOST_REQUEST_ERROR };
@@ -51,6 +58,7 @@ function parseHostRequest(payload, parseAutomationRequest) {
     && typeof request.instruction === "string"
     && request.instruction.length > 0
     && request.instruction.length <= 1_024
+    && (request.autoSubmit === undefined || typeof request.autoSubmit === "boolean")
   ) {
     return { id, request, error: null };
   }

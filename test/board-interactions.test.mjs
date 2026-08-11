@@ -11,6 +11,7 @@ const editorSource = await readFile(new URL("../web/src/components/TaskEditor.ts
 const labelPickerSource = await readFile(new URL("../web/src/components/LabelPicker.tsx", import.meta.url), "utf8");
 const contextMenuSource = await readFile(new URL("../web/src/components/TaskContextMenu.tsx", import.meta.url), "utf8");
 const cardSource = await readFile(new URL("../web/src/components/TaskCard.tsx", import.meta.url), "utf8");
+const taskCardSource = cardSource;
 const filterSource = await readFile(new URL("../web/src/taskFilters.ts", import.meta.url), "utf8");
 const typesSource = await readFile(new URL("../web/src/types.ts", import.meta.url), "utf8");
 
@@ -51,6 +52,24 @@ test("main issue cards stay compact while sidebar cards show ownership and creat
   assert.doesNotMatch(styles, /\.card-footer|\.created-at|\.project-chip/);
   assert.match(styles, /\.task-card \{[\s\S]*?min-height: 80px;[\s\S]*?gap: 6px;[\s\S]*?padding: 7px 8px/);
   assert.match(detailSource, /currentTask\.createdAt/);
+});
+
+test("eligible main issue cards expose a propagation-safe immediate run action", () => {
+  assert.match(taskCardSource, /onRunNow\?: \(task: Task\) => void/);
+  assert.match(taskCardSource, /runNowPending\?: boolean/);
+  assert.match(taskCardSource, /task\.status === "todo"[\s\S]*task\.status === "in_progress"/);
+  assert.match(taskCardSource, /presentation\.conversations\.length === 0/);
+  assert.match(taskCardSource, /!presentation\.processing\.running/);
+  assert.match(taskCardSource, /className="task-card-run-now"[\s\S]*event\.stopPropagation\(\)[\s\S]*onRunNow\?\.\(task\)/);
+});
+
+test("immediate run owns one launch, moves todo first and rolls back only its version", () => {
+  assert.match(appSource, /const \[runningNowTaskId, setRunningNowTaskId\]/);
+  assert.match(appSource, /async function runTaskNow\(task: Task\)/);
+  assert.match(appSource, /task\.status === "todo"[\s\S]*moveTaskRequest\(task, "in_progress"/);
+  assert.match(appSource, /openTaskInThread\(launchTask, \{ autoSubmit: true \}\)/);
+  assert.match(appSource, /moveTaskRequest\(current, "todo"/);
+  assert.match(appSource, /onRunNow=\{\(task\) => void runTaskNow\(task\)\}/);
 });
 
 test("scrollbars stay proportional while the workflow node library hides its bar", () => {

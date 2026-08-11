@@ -171,7 +171,7 @@ interface UndoNotice {
 
 type ProjectAutomationStatus = "ACTIVE" | "PAUSED";
 type AutomationQuotaState = "available" | "blocked" | "unknown" | "unavailable";
-type AutomationIntervalMinutes = 5 | 10 | 15 | 30 | 60;
+type AutomationIntervalMinutes = number;
 
 interface AutomationQuotaStatus {
   state: AutomationQuotaState;
@@ -225,6 +225,15 @@ interface PendingAutomationRequest {
   timeoutId: number;
 }
 
+interface OpenTaskThreadOptions {
+  autoSubmit?: boolean;
+}
+
+interface PendingThreadRequest {
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
 const DEFAULT_USER_ACTOR: ActorIdentity = {
   type: "user",
   id: "local-user",
@@ -242,7 +251,7 @@ const FIRST_USE_COMPLETE_KEY = "taskboard.first-use-complete.v1";
 const DEFAULT_AUTOMATION_OPTIONS = {
   enabledByUser: false,
   quotaAware: false,
-  intervalMinutes: 5,
+  intervalMinutes: 60,
   model: "gpt-5.5",
   reasoningEffort: "high",
 } as const;
@@ -329,11 +338,11 @@ function readProjectAutomations(): ProjectAutomations {
       const reasoningEffort = candidate.reasoningEffort ?? "high";
       const enabledByUser = candidate.enabledByUser ?? candidate.status === "ACTIVE";
       const quotaAware = candidate.quotaAware ?? false;
+      const intervalMinutes = normalizeAutomationIntervalMinutes(candidate.intervalMinutes);
       if (
         (candidate.automationId !== undefined && typeof candidate.automationId !== "string")
         || typeof candidate.codexProjectId !== "string"
         || (candidate.status !== "ACTIVE" && candidate.status !== "PAUSED")
-        || !isAutomationIntervalMinutes(candidate.intervalMinutes ?? 5)
         || !isAutomationModel(model)
         || !isAutomationReasoningEffort(reasoningEffort)
         || !isSupportedModelEffort(model, reasoningEffort)
@@ -349,7 +358,7 @@ function readProjectAutomations(): ProjectAutomations {
         enabledByUser,
         quotaAware,
         ...(quota ? { quota } : {}),
-        intervalMinutes: candidate.intervalMinutes ?? 5,
+        intervalMinutes,
         model,
         reasoningEffort,
       };
@@ -390,12 +399,19 @@ function isAutomationHostPolicy(
 }
 
 function isAutomationIntervalMinutes(value: unknown): value is AutomationIntervalMinutes {
-  return value === 5 || value === 10 || value === 15 || value === 30 || value === 60;
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 60;
+}
+
+function normalizeAutomationIntervalMinutes(value: unknown): AutomationIntervalMinutes {
+  return isAutomationIntervalMinutes(value) ? value : 60;
 }
 
 function intervalMinutesFromRrule(value: string): AutomationIntervalMinutes | null {
-  const match = /^RRULE:FREQ=MINUTELY;INTERVAL=(5|10|15|30|60)$/.exec(value);
-  return match ? Number(match[1]) as AutomationIntervalMinutes : null;
+  const match = /^RRULE:FREQ=MINUTELY;INTERVAL=(\d+)$/.exec(value);
+  const intervalMinutes = match ? Number(match[1]) : null;
+  return intervalMinutes !== null && intervalMinutes >= 1 && intervalMinutes <= 60
+    ? intervalMinutes
+    : null;
 }
 
 function workspaceName(path?: string): string | null {
@@ -630,6 +646,7 @@ export function App() {
   const [settlingTaskId, setSettlingTaskId] = useState<string | null>(null);
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
   const [openingThreadTaskId, setOpeningThreadTaskId] = useState<string | null>(null);
+  const [runningNowTaskId, setRunningNowTaskId] = useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(
     () => taskboardStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
   );
@@ -656,6 +673,7 @@ export function App() {
 
   const revisionPollingInterval = getRevisionPollingInterval(taskboardMetadata);
   const pendingAutomationRequestsRef = useRef(new Map<string, PendingAutomationRequest>());
+  const pendingThreadRequestsRef = useRef(new Map<string, PendingThreadRequest>());
   const automationRequestInFlightRef = useRef(false);
   const projectAutomationsRef = useRef(projectAutomations);
 
@@ -1195,12 +1213,21 @@ export function App() {
       }
 
       if (message.type === "taskboard:thread-prepared") {
+        const payload = message.payload as { taskId?: unknown } | undefined;
+        const taskId = typeof payload?.taskId === "string" ? payload.taskId : "";
+        pendingThreadRequestsRef.current.get(taskId)?.resolve();
+        pendingThreadRequestsRef.current.delete(taskId);
         setOpeningThreadTaskId(null);
         return;
       }
 
       if (message.type === "taskboard:thread-create-error" && message.payload) {
         const payload = message.payload as { taskId?: unknown; error?: unknown };
+        const taskId = typeof payload.taskId === "string" ? payload.taskId : "";
+        pendingThreadRequestsRef.current.get(taskId)?.reject(new Error(
+          typeof payload.error === "string" ? payload.error : "无法在 Codex 中创建对话。",
+        ));
+        pendingThreadRequestsRef.current.delete(taskId);
         setOpeningThreadTaskId(null);
         setActionError(typeof payload.error === "string" ? payload.error : "无法在 Codex 中创建对话。");
         return;
@@ -1963,7 +1990,7 @@ export function App() {
     postEmbeddedHostMessage({ type: "taskboard:expand-sidebar" });
   }
 
-  function openTaskInThread(task: Task) {
+  function openTaskInThread(task: Task, options: OpenTaskThreadOptions = {}): Promise<void> {
     const worktreePath = task.developmentContext?.type === "worktree"
       ? task.developmentContext.path
       : null;
@@ -1978,26 +2005,73 @@ export function App() {
       if (workspacePath) query.set("path", workspacePath);
       query.set("prompt", instruction);
       window.location.assign(`codex://new?${query.toString().replace(/\+/g, "%20")}`);
-      return;
+      return options.autoSubmit
+        ? Promise.reject(new Error("立即执行需要在 Codex 内打开任务面板。"))
+        : Promise.resolve();
     }
-    if (openingThreadTaskId) return;
+    if (openingThreadTaskId || pendingThreadRequestsRef.current.has(task.id)) {
+      return Promise.reject(new Error("已有 Codex 任务正在启动。"));
+    }
     const codexProject = hostContext?.projects?.find((project) => project.id === selectedProject?.id);
     setOpeningThreadTaskId(task.id);
     setActionError(null);
-    postEmbeddedHostMessage({
-      type: "taskboard:create-thread",
-      payload: {
-        taskId: task.id,
-        identifier: task.identifier,
-        instruction,
-        codexProjectId: codexProject?.id ?? (
-          selectedProject?.id === GLOBAL_PROJECT_ID ? hostContext?.projectId : selectedProject?.id
-        ),
-        projectName: selectedProject?.name,
-        workspacePath,
-        workspaceLabel: worktreePath ? workspaceName(worktreePath) : undefined,
-      },
+    return new Promise<void>((resolve, reject) => {
+      pendingThreadRequestsRef.current.set(task.id, { resolve, reject });
+      postEmbeddedHostMessage({
+        type: "taskboard:create-thread",
+        payload: {
+          taskId: task.id,
+          identifier: task.identifier,
+          instruction,
+          codexProjectId: codexProject?.id ?? (
+            selectedProject?.id === GLOBAL_PROJECT_ID ? hostContext?.projectId : selectedProject?.id
+          ),
+          projectName: selectedProject?.name,
+          workspacePath,
+          workspaceLabel: worktreePath ? workspaceName(worktreePath) : undefined,
+          autoSubmit: options.autoSubmit === true,
+        },
+      });
     });
+  }
+
+  async function runTaskNow(task: Task) {
+    if (runningNowTaskId || taskPresentations[task.id]?.conversations.length > 0) return;
+    setRunningNowTaskId(task.id);
+    setActionError(null);
+    let launchTask = task;
+    let movedVersion: number | null = null;
+    try {
+      if (task.status === "todo") {
+        launchTask = await moveTaskRequest(task, "in_progress", task.sortOrder);
+        movedVersion = launchTask.version;
+        setTasks((current) => sortTasks(current.map((item) => item.id === launchTask.id ? launchTask : item)));
+      }
+      await openTaskInThread(launchTask, { autoSubmit: true });
+    } catch (error) {
+      const candidate = tasksRef.current.find((item) => item.id === task.id);
+      const current = candidate && candidate.version >= launchTask.version ? candidate : launchTask;
+      if (
+        movedVersion !== null
+        && current?.version === movedVersion
+        && current.status === "in_progress"
+        && taskPresentations[current.id]?.conversations.length === 0
+      ) {
+        try {
+          const restored = await moveTaskRequest(current, "todo", current.sortOrder);
+          setTasks((items) => sortTasks(items.map((item) => item.id === restored.id ? restored : item)));
+        } catch (rollbackError) {
+          if (rollbackError instanceof ApiError && rollbackError.code === "VERSION_CONFLICT" && selectedProjectId) {
+            await refreshTasks(selectedProjectId, { quiet: true });
+          }
+        }
+      } else if (selectedProjectId) {
+        await refreshTasks(selectedProjectId, { quiet: true });
+      }
+      setActionError(errorMessage(error));
+    } finally {
+      setRunningNowTaskId(null);
+    }
   }
 
   function changeProject(projectId: string) {
@@ -2536,6 +2610,8 @@ export function App() {
                         onEdit={openTaskDetail}
                         onUpdate={updateTaskProperties}
                         onComplete={(task) => void moveTask(task, "done")}
+                        onRunNow={(task) => void runTaskNow(task)}
+                        runningNowTaskId={runningNowTaskId}
                         onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
                         onDragStart={startTaskDrag}
                         onDragEnd={endTaskDrag}

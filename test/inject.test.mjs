@@ -26,7 +26,7 @@ test("embedded page uses the launcher URL inside an opaque sandbox", () => {
   assert.match(source, /http:\/\/127\.0\.0\.1:47823\/\?host=codex/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__/);
   assert.match(source, /nextFrame\.name = frameName/);
-  assert.match(source, /nextFrame\.src = "about:blank"/);
+  assert.match(source, /page\.appendChild\(nextFrame\);\s*if \(blobUrl\) nextFrame\.src = blobUrl/);
   assert.match(source, /requestHost\("load-frame", \{ frameName, frameCapability: capability \}\)/);
   assert.match(source, /frameCapability = crypto\.randomUUID\(\)/);
   assert.match(source, /nextFrame\.setAttribute\("sandbox", "allow-scripts/);
@@ -37,7 +37,7 @@ test("embedded page uses the launcher URL inside an opaque sandbox", () => {
 
 test("entry clones the native Plugins row and the page covers the complete Codex workspace", () => {
   assert.match(source, /const PLUGIN_LABELS = \["插件", "plugins"\]/);
-  assert.match(source, /if \(siblings\.length >= 3\) return plugin;/);
+  assert.match(source, /if \(siblings\.length >= 2\) return plugin;/);
   assert.match(source, /return directButtons\.length >= 3/);
   assert.match(source, /const button = reference\.cloneNode\(true\)/);
   assert.match(source, /reference\.after\(entry\)/);
@@ -156,7 +156,7 @@ test("reopening reuses a ready cache-busted iframe without showing the startup p
 test("opaque iframe messages require the current document capability", () => {
   assert.match(
     source,
-    /event\.source !== frame\.contentWindow \|\| event\.origin !== frameOrigin/,
+    /if \(!frame \|\| event\.source !== frame\.contentWindow\) return/,
   );
   assert.match(source, /message\.type === "taskboard:open-thread"/);
   assert.match(source, /message\.type === "taskboard:create-thread"/);
@@ -166,7 +166,7 @@ test("opaque iframe messages require the current document capability", () => {
   assert.match(source, /type: "taskboard:frame-challenge"/);
   assert.match(source, /frameCapability = ""/);
   assert.doesNotMatch(source, /nextFrame\.addEventListener\("load", postHostContext\)/);
-  assert.match(source, /postMessage\(message, frameOrigin === "null" \? "\*" : frameOrigin\)/);
+  assert.match(source, /postMessage\(message, frameIsBlob \|\| frameOrigin === "null" \? "\*" : frameOrigin\)/);
 });
 
 test("packaged HTTPS links are opened by the authenticated host instead of a sandbox popup", () => {
@@ -257,7 +257,7 @@ test("issues open an unsent native Codex composer in the exact workspace with th
   assert.match(source, /requestHostTaskComposerPrefill\(\{/);
   assert.match(source, /requestHost\("prefill-task-composer"/);
   assert.match(source, /function waitForPreparedComposer\(identifier\)/);
-  assert.match(source, /requestHostTaskComposerPrefill\(\{ instruction \}\)/);
+  assert.match(source, /requestHostTaskComposerPrefill\(\{ instruction, autoSubmit \}\)/);
   assert.match(source, /normalizedLabel\(editor\.textContent\)\.includes\(normalizedLabel\(identifier\)\)/);
   assert.doesNotMatch(source, /submit\.click\(\)/);
   assert.match(source, /type: "taskboard:thread-prepared"/);
@@ -273,6 +273,12 @@ test("issues open an unsent native Codex composer in the exact workspace with th
   assert.match(webApp, /instruction,/);
   assert.match(webApp, /type: "taskboard:create-thread"/);
   assert.match(webApp, /type: "taskboard:open-thread", payload: \{ threadId \}/);
+});
+
+test("immediate run forwards only the bounded auto-submit composer option", () => {
+  assert.match(webApp, /autoSubmit\?: boolean/);
+  assert.match(webApp, /autoSubmit: options\.autoSubmit === true/);
+  assert.match(source, /requestHostTaskComposerPrefill\(\{ instruction, autoSubmit/);
 });
 
 test("the standalone web page opens linked Codex tasks through the app deep link", () => {
@@ -338,5 +344,6 @@ test("host integration stays thin", () => {
   assert.match(source, /type: "navigate-to-route"/);
   assert.doesNotMatch(source, /__codexSessionDeleteBridge/);
   assert.doesNotMatch(source, /import\s*\(/);
-  assert.doesNotMatch(source, /window\.fetch\s*=/);
+  assert.match(source, /const realFetch = window\.fetch\.bind\(window\)/);
+  assert.match(source, /if \(target\.origin !== taskboardOrigin\) return realFetch\(input, init\)/);
 });

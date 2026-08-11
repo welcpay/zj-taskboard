@@ -40,8 +40,8 @@ test("project selection starts from the route or recent projects and updates the
   assert.match(appSource, /taskboardStorage\.setItem\(RECENT_PROJECT_IDS_KEY, JSON\.stringify\(next\)\)/);
   assert.match(appSource, /function changeProject\(projectId: string\)/);
   assert.match(appSource, /setSelectedProjectId\(projectId\)/);
-  assert.match(appSource, /const url = buildIssueUrl\(window\.location\.href, projectId, null\)/);
-  assert.match(appSource, /window\.history\.replaceState\(null, "", url\)/);
+  assert.match(appSource, /const url = buildIssueUrl\(currentTaskboardRouteUrl\(\)\.href, projectId, null\)/);
+  assert.match(appSource, /replaceTaskboardRoute\(url\)/);
 });
 
 test("the selected project exposes the current board surfaces", () => {

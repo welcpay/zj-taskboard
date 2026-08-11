@@ -46,6 +46,8 @@ interface TaskCardProps {
   onEdit: (task: Task) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
   onComplete?: (task: Task) => void;
+  onRunNow?: (task: Task) => void;
+  runNowPending?: boolean;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
@@ -309,6 +311,8 @@ export function TaskCard({
   onEdit,
   onUpdate,
   onComplete,
+  onRunNow,
+  runNowPending = false,
   onContextMenu,
   onDragStart,
   onDragEnd,
@@ -336,6 +340,10 @@ export function TaskCard({
   const showsProperties = !processingCard
     && (hasProperties || showsInlineParticipants || showsConversation);
   const propertyDisabled = savingProperty !== null;
+  const canRunNow = variant === "main"
+    && presentation.conversations.length === 0
+    && !presentation.processing.running
+    && (task.status === "todo" || task.status === "in_progress");
 
   function updateProperty(changes: Partial<TaskDraft>, property: NonNullable<typeof savingProperty>) {
     setSavingProperty(property);
@@ -472,6 +480,34 @@ export function TaskCard({
             onOpenConversation={onOpenConversation}
           />
         </>
+      )}
+
+      {canRunNow && (
+        <div className="task-card-actions">
+          <button
+            className="task-card-detail-action"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit(task);
+            }}
+          >
+            查看详情
+          </button>
+          <button
+            className="task-card-run-now"
+            type="button"
+            disabled={runNowPending}
+            aria-busy={runNowPending}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRunNow?.(task);
+            }}
+          >
+            <TaskboardIcon name="automationPlay" />
+            <span>{runNowPending ? "正在启动..." : "立即执行"}</span>
+          </button>
+        </div>
       )}
     </article>
   );

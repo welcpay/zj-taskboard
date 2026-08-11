@@ -12,12 +12,14 @@ import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment
 import {
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
+  shouldActivateTaskboardAutomation,
 } from "../shared/taskboard-automation.mjs";
 import {
   findResidentInjectorPids,
   handleHostBindingPayload,
   reconcileInjectionRuntime,
   restartResidentInjector,
+  shouldEndManagedSession,
 } from "./codex-injector-runtime.mjs";
 import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
 import { createTaskboardSupervisor } from "./taskboard-supervisor.mjs";
@@ -67,6 +69,8 @@ const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardBaseUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}`;
 const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex`;
+const taskboardEmbedToken = randomUUID();
+const taskboardEmbedTokenHeader = "x-codex-taskboard-embed-token";
 const hostBindingName = "__codexTaskboardHostV1";
 const hostRequestMessage = "__codexTaskboardHostRequestV1";
 const hostResponseMessage = "__codexTaskboardHostResponseV1";
@@ -650,7 +654,7 @@ function findFrameByName(frameTree, frameName) {
   return null;
 }
 
-async function verifiedTaskboardDocument(frameCapability) {
+async function verifiedTaskboardHtml() {
   const challenge = randomBytes(32).toString("hex");
   const response = await fetch(taskboardPageUrl, {
     cache: "no-store",
@@ -665,7 +669,19 @@ async function verifiedTaskboardDocument(frameCapability) {
     .update(challenge)
     .digest("hex");
   if (proof !== expectedProof) throw new Error("Taskboard service identity check failed");
-  const html = await response.text();
+  return response.text();
+}
+
+async function registerTaskboardEmbedToken() {
+  const response = await fetch(`${taskboardBaseUrl}/api/local/embed-token`, {
+    method: "POST",
+    headers: { [taskboardEmbedTokenHeader]: taskboardEmbedToken },
+  });
+  if (!response.ok) throw new Error(`Embed token registration returned ${response.status}`);
+}
+
+async function verifiedTaskboardDocument(frameCapability) {
+  const html = await verifiedTaskboardHtml();
   const head = "<head>";
   if (!html.includes(head)) throw new Error("Taskboard document has no head element");
   return html.replace(
@@ -795,12 +811,19 @@ async function requestCodexAutomationViaCdp(cdp, executionContextId, method, par
 }
 
 async function applyTaskboardAutomationPolicy(request, rpc, stillCurrent = () => true) {
+  const hasTodo = await taskboardProjectHasTodo(request.taskboardProjectId);
+  if (!stillCurrent()) return { hasTodo, stale: true };
   const quota = request.quotaAware
     ? await readCodexQuotaStatus(request.model)
     : null;
   if (!stillCurrent()) return { quota, stale: true };
-  const shouldRun = request.enabledByUser
-    && (!request.quotaAware || quota?.state === "available");
+  const shouldRun = shouldActivateTaskboardAutomation({
+    enabledByUser: request.enabledByUser,
+    intervalMinutes: request.intervalMinutes,
+    quotaAware: request.quotaAware,
+    hasTodo,
+    quotaState: quota?.state ?? null,
+  });
   const result = await reconcileTaskboardAutomation(
     { ...request, operation: shouldRun ? "ensure-active" : "pause" },
     rpc,
@@ -808,7 +831,17 @@ async function applyTaskboardAutomationPolicy(request, rpc, stillCurrent = () =>
   if (result?.error === "not-found") {
     return { ...(quota ? { quota } : {}) };
   }
-  return { ...result, ...(quota ? { quota } : {}) };
+  return { ...result, hasTodo, ...(quota ? { quota } : {}) };
+}
+
+async function taskboardProjectHasTodo(projectId) {
+  const url = new URL(`${taskboardBaseUrl}/api/tasks`);
+  url.searchParams.set("projectId", projectId);
+  url.searchParams.set("status", "todo");
+  const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+  if (!response.ok) throw new Error(`Taskboard todo check returned HTTP ${response.status}`);
+  const body = await response.json();
+  return Array.isArray(body?.tasks) && body.tasks.length > 0;
 }
 
 function storedAutomationPolicy(request) {
@@ -828,8 +861,14 @@ function storedAutomationPolicy(request) {
 }
 
 function restoredAutomationPolicy(value) {
+  const intervalMinutes = Number.isInteger(value?.intervalMinutes)
+    && value.intervalMinutes >= 0
+    && value.intervalMinutes <= 60
+    ? value.intervalMinutes
+    : 60;
   return parseTaskboardAutomationHostRequest({
     ...value,
+    intervalMinutes,
     id: "restored-policy",
     action: "automation",
     requestId: "restored-policy",
@@ -898,7 +937,7 @@ function scheduleQuotaPolicyCheck(record, result) {
   const previous = quotaPolicyTimers.get(key);
   if (previous) clearTimeout(previous);
   quotaPolicyTimers.delete(key);
-  if (!request.enabledByUser || !request.quotaAware) return;
+  if (!request.enabledByUser || request.intervalMinutes === 0) return;
 
   const nextRunAt = Number(result.item?.nextRunAt);
   const nextRunDelay = Number.isFinite(nextRunAt) && nextRunAt > Date.now()
@@ -908,6 +947,9 @@ function scheduleQuotaPolicyCheck(record, result) {
     && Number.isFinite(result.quota.resetsAt)
     ? Math.max(1_000, result.quota.resetsAt * 1_000 - Date.now() + 1_000)
     : nextRunDelay;
+  const localPollDelay = result.item?.status === "ACTIVE"
+    ? 5_000
+    : request.intervalMinutes * 60_000;
   const timer = setTimeout(async () => {
     if (quotaPolicyRecords.get(key)?.version !== version) return;
     try {
@@ -919,7 +961,7 @@ function scheduleQuotaPolicyCheck(record, result) {
         scheduleQuotaPolicyCheck(current, { quota: { state: "unknown" } });
       }
     }
-  }, Math.min(nextRunDelay, resetDelay));
+  }, Math.min(localPollDelay, nextRunDelay, resetDelay));
   timer.unref();
   quotaPolicyTimers.set(key, timer);
 }
@@ -1002,7 +1044,7 @@ async function restoreQuotaPolicies(cdp) {
   const restoring = (async () => {
     await ensureQuotaPoliciesLoaded();
     for (const [projectId, record] of quotaPolicyRecords) {
-      if (record.request.enabledByUser && record.request.quotaAware) {
+      if (record.request.enabledByUser && record.request.intervalMinutes > 0) {
         await enqueueCurrentQuotaPolicy(projectId);
       }
     }
@@ -1019,6 +1061,31 @@ async function restoreQuotaPolicies(cdp) {
 async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
   const { instruction } = request;
   const deadline = Date.now() + 8_000;
+  async function submitVerifiedComposer() {
+    if (!request.autoSubmit) return { prefilled: true };
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13,
+    });
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13,
+    });
+    while (Date.now() < deadline) {
+      const started = await cdp.send("Runtime.evaluate", {
+        expression: `(() => {
+          const instruction = ${JSON.stringify(instruction)};
+          const editor = Array.from(document.querySelectorAll(
+            '[data-codex-composer="true"][contenteditable="true"]'
+          )).find((candidate) => candidate.getClientRects().length > 0);
+          return !editor || !(editor.textContent || "").includes(instruction);
+        })()`,
+        contextId: executionContextId,
+        returnByValue: true,
+      });
+      if (started.result.value === true) return { prefilled: true, submitted: true };
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    throw new Error("Timed out while submitting the issue instruction to Codex");
+  }
   while (Date.now() < deadline) {
     const prepared = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
@@ -1045,7 +1112,7 @@ async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
       await new Promise((resolve) => setTimeout(resolve, 80));
       continue;
     }
-    if (prepared.result.value.matches) return { prefilled: true };
+    if (prepared.result.value.matches) return submitVerifiedComposer();
 
     await cdp.send("Input.insertText", { text: instruction });
     break;
@@ -1063,7 +1130,7 @@ async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
       contextId: executionContextId,
       returnByValue: true,
     });
-    if (verified.result.value === true) return { prefilled: true };
+    if (verified.result.value === true) return submitVerifiedComposer();
     await new Promise((resolve) => setTimeout(resolve, 80));
   }
   throw new Error("Timed out while writing the issue instruction into the Codex composer");
@@ -1196,7 +1263,8 @@ async function readInjectionStatus(cdp) {
       pageMounted: Boolean(document.getElementById("codex-taskboard-page")),
       pageVisible: document.getElementById("codex-taskboard-page")?.hidden === false,
       frameReady: window.__codexTaskboardInjection__?.ready === true,
-      frameUrl: document.getElementById("codex-taskboard-frame")?.src || null
+      frameUrl: document.getElementById("codex-taskboard-frame")?.src || null,
+      frameStatus: document.getElementById("codex-taskboard-status")?.textContent?.trim() || null
     })`,
     returnByValue: true,
   });
@@ -1210,8 +1278,12 @@ async function waitForInjectionStatus(cdp, shouldOpen, expectedSourceHash, timeo
     Date.now() < deadline
     && (
       status.sourceHash !== expectedSourceHash
-      || !status.entryMounted
-      || (shouldOpen && (!status.pageVisible || !status.frameUrl || !status.frameReady))
+      || (shouldOpen && (
+        !status.pageMounted
+        || !status.pageVisible
+        || !status.frameUrl
+        || !status.frameReady
+      ))
     )
   ) {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -1260,6 +1332,30 @@ async function injectTarget(
   startupToken,
 ) {
   const cdp = await runtime.connect(target);
+  if (process.env.CODEX_TASKBOARD_DEBUG_FRAME === "1") {
+    cdp.on("Runtime.exceptionThrown", (event) => {
+      console.error("Taskboard frame exception", JSON.stringify(event.exceptionDetails));
+    });
+    cdp.on("Runtime.consoleAPICalled", (event) => {
+      console.error("Taskboard frame console", JSON.stringify(event));
+    });
+    cdp.on("Log.entryAdded", (event) => {
+      console.error("Taskboard frame log", JSON.stringify(event.entry));
+    });
+    for (const method of [
+      "Page.frameAttached",
+      "Page.frameNavigated",
+      "Page.frameStoppedLoading",
+      "Runtime.executionContextCreated",
+      "Network.loadingFailed",
+    ]) {
+      cdp.on(method, (event) => {
+        console.error(`Taskboard frame ${method}`, JSON.stringify(event));
+      });
+    }
+    await cdp.send("Log.enable");
+    await cdp.send("Network.enable");
+  }
   let retained = false;
   const hostBridge = keepAlive
     ? installTaskboardHostBinding(cdp, supervisor, startupToken)
@@ -1337,7 +1433,7 @@ async function injectTarget(
       ? await waitForFrame(cdp, status.frameUrl, 15_000)
       : false;
     if (shouldOpen && (!status.frameReady || !frameLoaded)) {
-      throw new Error("Taskboard frame did not report ready in the Codex renderer");
+      throw new Error(`Taskboard frame did not report ready in the Codex renderer ${JSON.stringify(status)}`);
     }
     const result = {
       ...status,
@@ -1409,10 +1505,16 @@ async function injectAll(
 }
 
 async function currentInjectionSource() {
-  const userScript = await readFile(injectionPath, "utf8");
+  await registerTaskboardEmbedToken();
+  const [userScript, taskboardHtml] = await Promise.all([
+    readFile(injectionPath, "utf8"),
+    verifiedTaskboardHtml(),
+  ]);
   const runtimeSource = `window.__CODEX_TASKBOARD_MANAGED_ORIGIN__ = ${JSON.stringify(taskboardOrigin)};
 window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = ${JSON.stringify(hostCapability)};
 window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(taskboardPageUrl)};
+window.__codexTaskboardEmbedToken__ = ${JSON.stringify(taskboardEmbedToken)};
+window.__codexTaskboardHtml__ = ${JSON.stringify(taskboardHtml)};
 ${userScript}`;
   const sourceHash = createHash("sha256").update(runtimeSource).digest("hex");
   return {
@@ -1584,6 +1686,7 @@ async function main() {
     if (firstResults.length > 0) {
       console.log(JSON.stringify({ injected: firstResults }, null, 2));
     }
+    let attachedOnce = firstResults.length > 0;
     let openPending = options.open && firstResults.length === 0;
     let idleAfterNormalExit = false;
 
@@ -1600,6 +1703,7 @@ async function main() {
         stopRequested,
       ]);
       if (stopping) break;
+      if (idleAfterNormalExit) continue;
       try {
         const service = await supervisor.ensure();
         if (service.restarted) await publishTaskboardRuntime();
@@ -1612,7 +1716,6 @@ async function main() {
           await connection.hostBridge?.publishHeartbeat();
         } catch (_) {}
       }
-      if (idleAfterNormalExit) continue;
       try {
         const results = await injectAll(
           cdpRuntime,
@@ -1627,6 +1730,7 @@ async function main() {
           options.startupToken,
         );
         if (results.length > 0) {
+          attachedOnce = true;
           openPending = false;
           console.log(JSON.stringify({ injected: results }, null, 2));
         }
@@ -1644,6 +1748,13 @@ async function main() {
               new Promise((resolve) => setTimeout(resolve, 250)),
             ]);
           }
+          if (shouldEndManagedSession({
+            launched: Boolean(launchedCodex),
+            attachedOnce,
+            browserConnected: cdpRuntime.isHealthy(),
+          })) {
+            break;
+          }
           if (launchedCodex?.exitCode === 0) {
             injectedTargets.forEach((connection) => {
               unregisterQuotaPolicyCdp(connection);
@@ -1654,9 +1765,7 @@ async function main() {
             cdpRuntime = null;
             codexProcess = null;
             idleAfterNormalExit = true;
-            console.error(
-              "Waiting for Codex after normal exit; open Codex Taskboard again to restart it.",
-            );
+            console.error("Codex 已退出；保留 Taskboard 服务，等待再次从 Codex Taskboard 启动。");
             continue;
           }
           throw error;
@@ -1664,6 +1773,13 @@ async function main() {
         const launchedCodexExited = codexProcess
           && (codexProcess.exitCode !== null || codexProcess.signalCode !== null);
         if (launchedCodexExited) {
+          if (shouldEndManagedSession({
+            launched: true,
+            attachedOnce,
+            browserConnected: false,
+          })) {
+            break;
+          }
           injectedTargets.forEach((connection) => {
             unregisterQuotaPolicyCdp(connection);
             connection.close();
@@ -1673,10 +1789,7 @@ async function main() {
           const exitCode = codexProcess.exitCode;
           codexProcess = null;
           if (exitCode === 0) {
-            console.error(
-              "Waiting for Codex after normal exit; open Codex Taskboard again to restart it.",
-            );
-            continue;
+            throw new Error("Codex exited before the taskboard renderer was attached");
           }
           console.error("Codex exited unexpectedly; restarting it for the taskboard launcher.");
           try {

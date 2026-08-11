@@ -51,6 +51,8 @@ const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 // "null" is the serialized origin of blob:-document iframes, which the Codex
 // renderer uses to embed the taskboard since its CSP blocks direct http iframes.
 const TRUSTED_EMBED_ORIGINS = new Set(["app://-", "null"]);
+const EMBED_TOKEN_HEADER = "x-codex-taskboard-embed-token";
+const EMBED_TOKEN_QUERY = "__codex_taskboard_embed_token";
 const CODEX_AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
@@ -1350,6 +1352,7 @@ export function createTaskboardServer(options = {}) {
   const database = new TaskboardDatabase(resolved.databasePath);
   const events = new EventHub();
   let clientStorageWrite = Promise.resolve();
+  let taskboardEmbedToken = null;
 
   async function readClientStorage() {
     try {
@@ -1656,7 +1659,36 @@ export function createTaskboardServer(options = {}) {
       }
 
       assertTrustedNetworkRequest(request, Boolean(resolved.instanceToken));
+      const url = new URL(request.url, "http://127.0.0.1");
+      const pathname = url.pathname;
+      if (resolved.instanceToken && pathname === "/api/local/embed-token") {
+        assertLoopbackRequest(request);
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        if (request.headers.origin) {
+          throw new ApiError(403, "INVALID_ORIGIN", "Embed tokens can only be registered by the local injector");
+        }
+        const token = request.headers[EMBED_TOKEN_HEADER];
+        if (typeof token !== "string" || !/^[a-f0-9-]{36}$/i.test(token)) {
+          throw new ApiError(400, "INVALID_EMBED_TOKEN", "Embed token is invalid");
+        }
+        taskboardEmbedToken = token;
+        return sendEmpty(response, 204);
+      }
       const origin = request.headers.origin;
+      const headerToken = request.headers[EMBED_TOKEN_HEADER];
+      const queryToken = request.method === "GET" ? url.searchParams.get(EMBED_TOKEN_QUERY) : null;
+      const hasStaticEmbedAccess = Boolean(
+        resolved.instanceToken
+        && origin === "app://-"
+        && request.method === "GET"
+        && (pathname.startsWith("/assets/") || pathname === "/favicon.svg")
+      );
+      const hasEmbedToken = Boolean(
+        resolved.instanceToken
+        && origin === "app://-"
+        && taskboardEmbedToken
+        && (headerToken === taskboardEmbedToken || queryToken === taskboardEmbedToken)
+      );
       const trustedEmbedOrigin = TRUSTED_EMBED_ORIGINS.has(origin)
         || (Boolean(resolved.instanceToken) && origin === "null");
       if (trustedEmbedOrigin) {
@@ -1675,7 +1707,12 @@ export function createTaskboardServer(options = {}) {
           return;
         }
       }
-      if (resolved.instanceToken && origin === "app://-") {
+      if (
+        resolved.instanceToken
+        && origin === "app://-"
+        && !hasEmbedToken
+        && !hasStaticEmbedAccess
+      ) {
         const challenge = request.headers["x-codex-taskboard-challenge"];
         if (typeof challenge !== "string" || !/^[a-f0-9]{32,128}$/i.test(challenge)) {
           throw new ApiError(401, "INVALID_INSTANCE_CHALLENGE", "Launcher challenge is required");
@@ -1685,8 +1722,7 @@ export function createTaskboardServer(options = {}) {
           createHmac("sha256", resolved.instanceSecret).update(challenge).digest("hex"),
         );
       }
-      const url = new URL(request.url, "http://127.0.0.1");
-      const pathname = url.pathname;
+      if (hasEmbedToken) url.searchParams.delete(EMBED_TOKEN_QUERY);
       const isLocalAiRoute = pathname === "/api/local/ai" || pathname.startsWith("/api/local/ai/");
       if (isLocalAiRoute) {
         assertAiLoopbackRequest(request);

@@ -1180,10 +1180,10 @@ kbd {
 .project-automation-menu {
   position: fixed;
   z-index: 1300;
-  width: min(304px, calc(100vw - 16px));
-  padding: 16px;
+  width: min(360px, calc(100vw - 16px));
+  padding: 0;
   border: var(--border-hairline) solid var(--border-strong);
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--surface-raised);
   color: var(--text-primary);
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.08), 0 0 0 0.5px rgba(0, 0, 0, 0.035);
@@ -1201,10 +1201,34 @@ kbd {
   align-items: center;
 }
 
+.project-automation-summary,
+.project-automation-field,
+.automation-model-grid,
+.project-automation-secondary {
+  padding: 12px 16px;
+}
+
+.project-automation-summary,
+.project-automation-field,
+.automation-model-grid {
+  border-bottom: var(--border-hairline) solid var(--border-subtle);
+}
+
 .project-automation-menu-heading {
   justify-content: space-between;
   margin-bottom: 14px;
   font-size: 13px;
+}
+
+.project-automation-menu-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.project-automation-menu-heading small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 400;
 }
 
 .project-automation-menu-heading > span {
@@ -1220,13 +1244,79 @@ kbd {
   font-size: 12px;
 }
 
+.project-automation-field {
+  display: grid;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.automation-interval-segments {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  overflow: hidden;
+  border: var(--border-hairline) solid var(--border);
+  border-radius: 6px;
+}
+
+.automation-interval-segments button {
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  border-right: var(--border-hairline) solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: 500 11px/1 system-ui, sans-serif;
+}
+
+.automation-interval-segments button:last-child {
+  border-right: 0;
+}
+
+.automation-interval-segments button.is-selected {
+  background: var(--text-primary);
+  color: var(--surface-raised);
+}
+
+.automation-model-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.automation-model-grid .project-automation-field {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+}
+
+.automation-model-grid .automation-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.project-automation-secondary {
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
 .project-automation-switch .board-setting-switch {
   flex: 0 0 auto;
 }
 
-.project-automation-field select {
+.automation-select {
+  position: relative;
+  min-width: 118px;
+}
+
+.automation-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
   min-width: 98px;
   height: 26px;
+  gap: 8px;
   padding: 0 6px;
   border: var(--border-hairline) solid var(--border);
   border-radius: 5px;
@@ -1234,11 +1324,85 @@ kbd {
   background: var(--surface);
   color: var(--text-primary);
   font: inherit;
+  text-align: left;
 }
 
-.project-automation-field select:focus-visible {
+.automation-select-trigger:focus-visible {
   outline: 0;
   box-shadow: none;
+}
+
+.automation-select-chevron {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.automation-select-listbox {
+  position: absolute;
+  z-index: 1400;
+  top: calc(100% + 4px);
+  right: 0;
+  width: max-content;
+  min-width: 100%;
+  max-height: 190px;
+  padding: 4px;
+  overflow: auto;
+  border: var(--border-hairline) solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: var(--dialog-shadow);
+}
+
+.automation-select-option {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.automation-select-option.is-highlighted {
+  background: var(--surface-hover);
+}
+
+.automation-select-option[aria-selected="true"] {
+  color: var(--accent);
+  font-weight: 550;
+}
+
+.automation-custom-interval {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.automation-custom-interval input {
+  min-width: 0;
+  width: 92px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: inherit;
+  background: var(--surface-primary);
+}
+
+.automation-custom-interval input:focus-visible {
+  outline: 0;
+  border-color: var(--accent-border);
+}
+
+.automation-interval-error {
+  margin: 4px 0 0;
+  color: var(--danger-text);
+  font-size: 12px;
 }
 
 .project-automation-note,
@@ -1270,6 +1434,24 @@ kbd {
 
 .project-automation-error {
   color: var(--danger);
+}
+
+@media (max-width: 430px) {
+  .automation-model-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .automation-interval-segments {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .automation-interval-segments button:nth-child(3) {
+    border-right: 0;
+  }
+
+  .automation-interval-segments button:nth-child(-n + 3) {
+    border-bottom: var(--border-hairline) solid var(--border);
+  }
 }
 
 .board-setting-switch {
@@ -9510,6 +9692,57 @@ kbd {
   font-size: 11px;
   font-weight: 500;
   line-height: 15px;
+}
+
+.task-card-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(112px, 1.35fr);
+  gap: 8px;
+  margin: 2px -16px -16px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid rgba(0, 0, 0, .08);
+}
+
+.task-card-detail-action,
+.task-card-run-now {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 32px;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font: 500 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.task-card-detail-action {
+  border: 1px solid rgba(0, 0, 0, .12);
+  background: #fff;
+  color: var(--text-secondary);
+}
+
+.task-card-run-now {
+  border: 1px solid #202124;
+  background: #202124;
+  color: #fff;
+}
+
+.task-card-run-now .taskboard-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.task-card-run-now:disabled {
+  cursor: wait;
+  opacity: .68;
+}
+
+.task-card-detail-action:focus-visible,
+.task-card-run-now:focus-visible {
+  outline: 2px solid #2f6feb;
+  outline-offset: 2px;
 }
 
 .task-processing-row.is-running .task-processing-label {

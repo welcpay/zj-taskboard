@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
@@ -6,7 +7,13 @@ import {
   handleHostBindingPayload,
   reconcileInjectionRuntime,
   restartResidentInjector,
+  shouldEndManagedSession,
 } from "../scripts/codex-injector-runtime.mjs";
+
+const runtimeSource = await readFile(
+  new URL("../scripts/codex-injector-runtime.mjs", import.meta.url),
+  "utf8",
+);
 
 const currentAutomationRequest = {
   id: "host-request-1",
@@ -22,6 +29,13 @@ const currentAutomationRequest = {
   model: "gpt-5.6-sol",
   reasoningEffort: "ultra",
 };
+
+test("managed sessions keep the Taskboard service alive after Codex disconnects", () => {
+  assert.equal(shouldEndManagedSession({ launched: true, attachedOnce: true, browserConnected: false }), false);
+  assert.equal(shouldEndManagedSession({ launched: true, attachedOnce: false, browserConnected: false }), false);
+  assert.equal(shouldEndManagedSession({ launched: false, attachedOnce: true, browserConnected: false }), false);
+  assert.equal(shouldEndManagedSession({ launched: true, attachedOnce: true, browserConnected: true }), false);
+});
 
 test("a binding call from the wrong execution context cannot reach native actions", async () => {
   const calls = [];
@@ -119,6 +133,10 @@ test("a stale automation parser receives an immediate host error instead of timi
     error: "自动认领配置暂时无法应用，请刷新后重试",
     diagnosticCode: "AUTOMATION_SCHEMA_MISMATCH",
   }]);
+});
+
+test("composer prefill accepts auto-submit only when it is boolean", () => {
+  assert.match(runtimeSource, /typeof request\.autoSubmit === "boolean"/);
 });
 
 test("attach replaces an old runtime with the current source and restores an open page", async () => {

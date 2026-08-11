@@ -121,6 +121,43 @@ test("launcher mode proves service identity and hides every route behind its ins
   assert.equal(launcherApi.response.headers.get("access-control-allow-origin"), "null");
 });
 
+test("launcher mode authorizes Codex blob assets and APIs with an embed token", async () => {
+  const instanceToken = "7a6f8d37-78ce-46c9-87a8-08e10db88da2";
+  const instanceSecret = "2e587946-96d6-47b5-930a-1ba70214fa88";
+  const embedToken = "d9db266b-f4d1-491c-ab0a-f4e41f370fd1";
+  const baseUrl = await startServer(() => ({ instanceToken, instanceSecret }));
+
+  const registration = await request(baseUrl, `/${instanceToken}/api/local/embed-token`, {
+    method: "POST",
+    headers: { "x-codex-taskboard-embed-token": embedToken },
+  });
+  assert.equal(registration.response.status, 204);
+
+  const asset = await fetch(
+    `${baseUrl}/${instanceToken}/?host=codex&__codex_taskboard_embed_token=${embedToken}`,
+    { headers: { origin: "app://-" } },
+  );
+  assert.equal(asset.status, 200);
+
+  const api = await request(baseUrl, `/${instanceToken}/api/projects`, {
+    headers: {
+      origin: "app://-",
+      "x-codex-taskboard-embed-token": embedToken,
+    },
+  });
+  assert.equal(api.response.status, 200);
+
+  const dynamicAsset = await fetch(`${baseUrl}/${instanceToken}/favicon.svg`, {
+    headers: { origin: "app://-" },
+  });
+  assert.equal(dynamicAsset.status, 200);
+
+  const missingToken = await request(baseUrl, `/${instanceToken}/api/projects`, {
+    headers: { origin: "app://-" },
+  });
+  assert.equal(missingToken.response.status, 401);
+});
+
 test("workflow workspaces persist centrally with optimistic concurrency", async () => {
   const baseUrl = await startServer();
   const initial = await request(baseUrl, "/api/projects/local/workflow-workspace");

@@ -18,6 +18,15 @@ test("the macOS launcher uses one instance, serialized lifecycle changes, and a 
   assert.doesNotMatch(launcherSource, /const LAUNCHER_PORT/);
 });
 
+test("the packaged launcher exits after its managed session ends", () => {
+  assert.match(launcherSource, /clear_pid_record\(&event_state, pid\)/);
+  assert.match(launcherSource, /event_app\.exit\(0\)/);
+  assert.doesNotMatch(
+    launcherSource,
+    /thread::sleep\(Duration::from_secs\(2\)\)[\s\S]*?start_launcher\(&event_app/,
+  );
+});
+
 test("release signing is tag-only and PR CI builds the real unsigned app bundle", () => {
   assert.doesNotMatch(releaseWorkflow, /workflow_dispatch/);
   assert.match(releaseWorkflow, /git merge-base --is-ancestor/);
