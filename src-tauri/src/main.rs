@@ -1,10 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod daemon;
+
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
-    net::TcpListener,
     os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
@@ -26,7 +27,6 @@ use uuid::Uuid;
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const TASKBOARD_LISTEN_FD: i32 = 5;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +56,6 @@ struct LauncherState {
     update_in_progress: AtomicBool,
     generation: AtomicU64,
     lifecycle: Mutex<()>,
-    taskboard_listener: Mutex<Option<TcpListener>>,
     _instance_lock: File,
     data_directory: PathBuf,
     log_path: PathBuf,
@@ -86,7 +85,6 @@ impl LauncherState {
             update_in_progress: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
-            taskboard_listener: Mutex::new(None),
             _instance_lock: instance_lock,
             pid_record_path: data_directory.join("launcher-child.json"),
             data_directory,
@@ -126,19 +124,6 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), std::io::Erro
         }
     }
     Ok(())
-}
-
-fn taskboard_listener(state: &LauncherState) -> Result<(i32, u16), String> {
-    let mut listener = state.taskboard_listener.lock().unwrap();
-    if listener.is_none() {
-        *listener = Some(TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?);
-    }
-    let listener = listener.as_ref().unwrap();
-    let port = listener
-        .local_addr()
-        .map_err(|error| error.to_string())?
-        .port();
-    Ok((listener.as_raw_fd(), port))
 }
 
 fn update_snapshot(
@@ -348,10 +333,7 @@ fn start_launcher_locked(
         "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         resource_directory.join("bin").display()
     );
-    let (taskboard_listener_fd, taskboard_port) = taskboard_listener(state)?;
     let instance_token = Uuid::new_v4().to_string();
-    let instance_secret = Uuid::new_v4().to_string();
-    let version = state.snapshot.lock().unwrap().version.clone();
     let codex_profile = state.data_directory.join("codex-profile");
     let codex_source_profile = home_directory.join("Library/Application Support/Codex");
     let mut command = StdCommand::new(&node_path);
@@ -365,12 +347,9 @@ fn start_launcher_locked(
             "CODEX_TASKBOARD_RUNTIME_FILE",
             state.data_directory.join("launcher-runtime.json"),
         )
-        .env("CODEX_TASKBOARD_LISTEN_FD", TASKBOARD_LISTEN_FD.to_string())
+        .env("CODEX_TASKBOARD_URL", "http://127.0.0.1:47823")
         .env("CODEX_TASKBOARD_HOST", "127.0.0.1")
-        .env("CODEX_TASKBOARD_PORT", taskboard_port.to_string())
-        .env("CODEX_TASKBOARD_INSTANCE_TOKEN", &instance_token)
-        .env("CODEX_TASKBOARD_INSTANCE_SECRET", &instance_secret)
-        .env("CODEX_TASKBOARD_VERSION", &version)
+        .env("CODEX_TASKBOARD_PORT", "47823")
         .env(
             "CODEX_TASKBOARD_CODEX_PROFILE",
             codex_profile.to_string_lossy().as_ref(),
@@ -385,17 +364,6 @@ fn start_launcher_locked(
         .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    unsafe {
-        command.pre_exec(move || {
-            if libc::dup2(taskboard_listener_fd, TASKBOARD_LISTEN_FD) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::fcntl(TASKBOARD_LISTEN_FD, libc::F_SETFD, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.id();
     if let Err(error) = write_pid_record(state, pid, node_path, injector_path) {
@@ -412,7 +380,7 @@ fn start_launcher_locked(
     append_log(
         state,
         &format!(
-            "Started launcher child {pid} on Taskboard {taskboard_port} with private CDP pipe"
+            "Started launcher child {pid} on fixed Taskboard 47823 with private CDP pipe"
         ),
     );
     if let Some(stdout) = stdout {
@@ -736,6 +704,8 @@ fn main() {
             ));
             app.manage(state.clone());
 
+            daemon::reconcile_daemon(app.handle())?;
+
             let check_update =
                 MenuItem::with_id(app, "check-update", "检查更新", false, None::<&str>)?;
             let restart_codex =
@@ -830,6 +800,7 @@ fn main() {
             });
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![daemon::uninstall_daemon])
         .build(tauri::generate_context!())
         .expect("failed to build Codex Taskboard");
 

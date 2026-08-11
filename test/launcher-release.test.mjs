@@ -11,8 +11,9 @@ test("the macOS launcher uses one instance, serialized lifecycle changes, and a 
   assert.match(launcherSource, /libc::flock/);
   assert.match(launcherSource, /lifecycle: Mutex/);
   assert.match(launcherSource, /generation: AtomicU64/);
-  assert.match(launcherSource, /TcpListener::bind\(\("127\.0\.0\.1", 0\)\)/);
-  assert.equal(launcherSource.match(/TcpListener::bind/g)?.length, 1);
+  assert.match(launcherSource, /daemon::reconcile_daemon/);
+  assert.match(launcherSource, /CODEX_TASKBOARD_URL", "http:\/\/127\.0\.0\.1:47823"/);
+  assert.doesNotMatch(launcherSource, /TcpListener::bind/);
   assert.match(launcherSource, /"--cdp-pipe"/);
   assert.doesNotMatch(launcherSource, /cdp_port/);
   assert.doesNotMatch(launcherSource, /const LAUNCHER_PORT/);
