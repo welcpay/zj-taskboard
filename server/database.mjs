@@ -750,6 +750,131 @@ export class TaskboardDatabase {
     this.database.close();
   }
 
+  applyTeamChanges(changes) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const change of changes) {
+        const snapshot = change.snapshot;
+        if (change.entityType === "task") {
+          if (snapshot === null || change.operationType === "delete") {
+            this.database.prepare("DELETE FROM tasks WHERE id = ?").run(change.entityId);
+            continue;
+          }
+          const existing = this.database.prepare("SELECT worktree_path FROM tasks WHERE id = ?").get(change.entityId);
+          const development = snapshot.developmentContext;
+          const gitBranch = development?.type === "branch" ? development.branch : null;
+          const worktreeBranch = development?.type === "worktree" ? development.branch : null;
+          this.database.prepare(`
+            INSERT INTO tasks (
+              id, identifier, project_id, title, description, status, priority, labels,
+              sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
+              assignee_type, assignee_id, assignee_name, assignee_avatar_url,
+              workflow_id, git_branch, worktree_path, worktree_branch, start_date, due_date,
+              recurrence_interval, recurrence_unit, archived_at, version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              identifier = excluded.identifier,
+              project_id = excluded.project_id,
+              title = excluded.title,
+              description = excluded.description,
+              status = excluded.status,
+              priority = excluded.priority,
+              labels = excluded.labels,
+              sort_order = excluded.sort_order,
+              thread_id = excluded.thread_id,
+              creator_type = excluded.creator_type,
+              creator_id = excluded.creator_id,
+              creator_name = excluded.creator_name,
+              creator_avatar_url = excluded.creator_avatar_url,
+              assignee_type = excluded.assignee_type,
+              assignee_id = excluded.assignee_id,
+              assignee_name = excluded.assignee_name,
+              assignee_avatar_url = excluded.assignee_avatar_url,
+              workflow_id = excluded.workflow_id,
+              git_branch = excluded.git_branch,
+              worktree_branch = excluded.worktree_branch,
+              start_date = excluded.start_date,
+              due_date = excluded.due_date,
+              recurrence_interval = excluded.recurrence_interval,
+              recurrence_unit = excluded.recurrence_unit,
+              archived_at = excluded.archived_at,
+              version = excluded.version,
+              updated_at = excluded.updated_at
+          `).run(
+            change.entityId,
+            snapshot.identifier ?? change.entityId,
+            snapshot.projectId,
+            snapshot.title,
+            snapshot.description ?? "",
+            snapshot.status,
+            snapshot.priority,
+            JSON.stringify(snapshot.labels ?? []),
+            snapshot.sortOrder ?? 1000,
+            snapshot.threadId ?? null,
+            snapshot.creatorType ?? "user",
+            snapshot.creatorId ?? "remote-user",
+            snapshot.creatorName ?? "Remote User",
+            snapshot.creatorAvatarUrl ?? null,
+            snapshot.assignee?.type ?? "user",
+            snapshot.assignee?.id ?? snapshot.creatorId ?? "remote-user",
+            snapshot.assignee?.name ?? snapshot.creatorName ?? "Remote User",
+            snapshot.assignee?.avatarUrl ?? null,
+            snapshot.workflowId ?? null,
+            gitBranch,
+            existing?.worktree_path ?? null,
+            worktreeBranch,
+            snapshot.startDate ?? null,
+            snapshot.dueDate ?? null,
+            snapshot.recurrence?.interval ?? null,
+            snapshot.recurrence?.unit ?? null,
+            snapshot.archivedAt ?? null,
+            change.revision,
+            snapshot.createdAt ?? now(),
+            snapshot.updatedAt ?? now(),
+          );
+          continue;
+        }
+        if (change.entityType === "comment") {
+          if (snapshot === null || change.operationType === "delete") {
+            this.database.prepare("DELETE FROM comments WHERE id = ?").run(change.entityId);
+            continue;
+          }
+          this.database.prepare(`
+            INSERT INTO comments (
+              id, task_id, body, thread_id, author_type, author_id, author_name,
+              author_avatar_url, version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              body = excluded.body,
+              thread_id = excluded.thread_id,
+              author_type = excluded.author_type,
+              author_id = excluded.author_id,
+              author_name = excluded.author_name,
+              author_avatar_url = excluded.author_avatar_url,
+              version = excluded.version,
+              updated_at = excluded.updated_at
+          `).run(
+            change.entityId,
+            snapshot.taskId,
+            snapshot.body,
+            snapshot.threadId ?? null,
+            snapshot.authorType ?? "user",
+            snapshot.authorId ?? "remote-user",
+            snapshot.authorName ?? "Remote User",
+            snapshot.authorAvatarUrl ?? null,
+            change.revision,
+            snapshot.createdAt ?? now(),
+            snapshot.updatedAt ?? now(),
+          );
+        }
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   #migrateTaskStatuses() {
     const tasksSql = this.database.prepare(`
       SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tasks'

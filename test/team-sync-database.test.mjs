@@ -177,3 +177,52 @@ test("local mutation and outbox append share one transaction", async (t) => {
   assert.equal(database.getProject("local").name, "全局");
   assert.deepEqual(await store.listPending("alpha"), []);
 });
+
+test("pulled task and comment snapshots update the local cache without accepting machine paths", async (t) => {
+  const { database } = await fixture(t);
+  database.createProject({ id: "shared", name: "Shared", workspacePath: "/Users/local/shared" });
+  const task = database.createTask({
+    projectId: "shared",
+    title: "Local title",
+    description: "",
+    status: "todo",
+    priority: "none",
+    labels: [],
+    sortOrder: 1000,
+    threadId: null,
+    actor: { type: "user", id: "owner", name: "Owner", avatarUrl: null },
+    assignee: { type: "user", id: "owner", name: "Owner", avatarUrl: null },
+    workflowId: null,
+    developmentContext: { type: "worktree", path: "/Users/local/worktree", branch: "feature/local" },
+    startDate: null,
+    dueDate: null,
+    recurrence: null,
+  });
+  database.applyTeamChanges([{ entityType: "task", entityId: task.id, revision: 2, operationType: "update", snapshot: {
+    ...task,
+    title: "Remote title",
+    version: 2,
+    developmentContext: { type: "worktree", path: "/remote/must-not-persist", branch: "feature/shared" },
+  } }, { entityType: "comment", entityId: "remote-comment", revision: 1, operationType: "create", snapshot: {
+    id: "remote-comment",
+    taskId: task.id,
+    body: "Remote comment",
+    threadId: null,
+    authorType: "user",
+    authorId: "remote-user",
+    authorName: "Remote User",
+    authorAvatarUrl: null,
+    version: 1,
+    createdAt: "2026-08-12T10:00:00.000Z",
+    updatedAt: "2026-08-12T10:00:00.000Z",
+  } }]);
+  const updated = database.getTask(task.id);
+  assert.equal(updated.title, "Remote title");
+  assert.equal(updated.version, 2);
+  assert.deepEqual(updated.developmentContext, {
+    type: "worktree",
+    path: "/Users/local/worktree",
+    branch: "feature/shared",
+  });
+  assert.equal(database.listComments(task.id)[0].body, "Remote comment");
+});

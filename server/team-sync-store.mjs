@@ -230,6 +230,21 @@ export function createTeamSyncStore({ database, now = () => new Date().toISOStri
       if (result.changes !== 1) throw new Error(`Outbox operation '${operationId}' does not exist`);
     },
 
+    async rebaseOperation(profileId, operationId, input) {
+      requireProfile(profileId);
+      const result = raw.prepare(`
+        UPDATE team_outbox
+        SET base_version = ?, base_snapshot = ?
+        WHERE profile_id = ? AND id = ?
+      `).run(
+        input.baseVersion,
+        input.baseSnapshot === null ? null : JSON.stringify(remoteValue(input.baseSnapshot)),
+        profileId,
+        operationId,
+      );
+      if (result.changes !== 1) throw new Error(`Outbox operation '${operationId}' does not exist`);
+    },
+
     async acknowledgeBatch(profileId, input) {
       transaction(() => {
         requireProfile(profileId);

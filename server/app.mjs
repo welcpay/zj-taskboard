@@ -30,6 +30,8 @@ import { ApiError, TaskboardDatabase } from "./database.mjs";
 import { ProjectSummaryService } from "./project-summary.mjs";
 import { createKeychainStore } from "./keychain.mjs";
 import { createTeamConfigStore } from "./team-config.mjs";
+import { createTeamSyncWorker } from "./team-sync.mjs";
+import { createTeamSyncStore } from "./team-sync-store.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -1402,6 +1404,53 @@ export function createTaskboardServer(options = {}) {
   });
   const teamKeychain = options.teamKeychain ?? createKeychainStore();
   const remoteFetch = options.remoteFetch ?? globalThis.fetch;
+  const teamSyncStore = options.teamSyncStore ?? createTeamSyncStore({ database });
+  const teamSyncWorker = options.teamSyncWorker ?? createTeamSyncWorker({
+    configStore: teamConfig,
+    keychain: teamKeychain,
+    syncStore: teamSyncStore,
+    remoteFetch,
+    applyRemoteChanges: options.applyRemoteChanges ?? ((changes) => database.applyTeamChanges(changes)),
+    deviceId: options.deviceId ?? process.env.CODEX_TASKBOARD_DEVICE_ID ?? os.hostname(),
+    clientVersion: resolved.version,
+  });
+  async function queueTeamOperation({ entityType, entityId, operationType, baseVersion, baseSnapshot, change, actor }) {
+    const config = await teamConfig.read();
+    const profile = config.profiles.find((candidate) => candidate.id === config.activeProfileId);
+    if (!profile) return null;
+    await teamSyncStore.upsertProfile({ id: profile.id, serverUrl: profile.url, active: true });
+    const id = randomUUID();
+    await teamSyncStore.appendOperation({
+      profileId: profile.id,
+      id,
+      idempotencyKey: `${options.deviceId ?? process.env.CODEX_TASKBOARD_DEVICE_ID ?? os.hostname()}:${id}`,
+      entityType,
+      entityId,
+      operationType,
+      baseVersion,
+      baseSnapshot,
+      change,
+      userId: actor.id,
+      deviceId: options.deviceId ?? process.env.CODEX_TASKBOARD_DEVICE_ID ?? os.hostname(),
+    });
+    if (options.enableTeamSyncTimer !== false) void teamSyncWorker.syncNow();
+    return id;
+  }
+  function taskCreateChange(task) {
+    return {
+      projectId: task.projectId,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority,
+      labels: task.labels,
+      workflowId: task.workflowId,
+      developmentContext: task.developmentContext,
+      startDate: task.startDate,
+      dueDate: task.dueDate,
+      recurrence: task.recurrence,
+    };
+  }
   async function teamConfigOperation(operation) {
     try {
       return await operation();
@@ -1826,6 +1875,27 @@ export function createTaskboardServer(options = {}) {
           return sendJson(response, 201, { profile: { ...profile, hasToken: false } });
         }
         return methodNotAllowed(response, ["GET", "POST"]);
+      }
+
+      if (pathname === "/api/team/sync/status") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        return sendJson(response, 200, await teamSyncWorker.status());
+      }
+
+      if (pathname === "/api/team/sync") {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        await readJson(request);
+        return sendJson(response, 200, await teamSyncWorker.syncNow({ force: true }));
+      }
+
+      const teamSyncActionRoute = pathname.match(/^\/api\/team\/sync\/(pause|resume)$/);
+      if (teamSyncActionRoute) {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        await readJson(request);
+        const result = teamSyncActionRoute[1] === "pause"
+          ? await teamSyncWorker.pause()
+          : await teamSyncWorker.resume();
+        return sendJson(response, 200, result);
       }
 
       const teamProfileRoute = pathname.match(/^\/api\/team\/profiles\/([^/]+)$/);
@@ -2345,6 +2415,15 @@ export function createTaskboardServer(options = {}) {
             actor,
             assignee: resolveAssignee(assigneeTarget, actor),
           });
+          await queueTeamOperation({
+            entityType: "task",
+            entityId: task.id,
+            operationType: "create",
+            baseVersion: 0,
+            baseSnapshot: null,
+            change: taskCreateChange(task),
+            actor,
+          });
           events.emit("task.created", { task });
           return sendJson(response, 201, { task });
         }
@@ -2453,9 +2532,19 @@ export function createTaskboardServer(options = {}) {
           return sendJson(response, 200, { comments: database.listComments(taskId) });
         }
         if (request.method === "POST") {
+          const actor = actorFromRequest(request);
           const comment = database.createComment(taskId, {
             ...parseCommentCreate(await readJson(request)),
-            actor: actorFromRequest(request),
+            actor,
+          });
+          await queueTeamOperation({
+            entityType: "comment",
+            entityId: comment.id,
+            operationType: "create",
+            baseVersion: 0,
+            baseSnapshot: null,
+            change: { taskId: comment.taskId, body: comment.body, threadId: comment.threadId },
+            actor,
           });
           const task = database.getTask(taskId);
           events.emit("comment.created", { comment, task });
@@ -2479,8 +2568,18 @@ export function createTaskboardServer(options = {}) {
           throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Comment routes do not accept query parameters");
         }
         if (request.method === "PATCH") {
+          const baseComment = database.getComment(id);
           const patch = parseCommentPatch(await readJson(request));
           const comment = database.updateComment(id, patch.version, patch.body, patch.threadId);
+          await queueTeamOperation({
+            entityType: "comment",
+            entityId: comment.id,
+            operationType: "update",
+            baseVersion: patch.version,
+            baseSnapshot: baseComment,
+            change: { body: comment.body, threadId: comment.threadId },
+            actor: actorFromRequest(request),
+          });
           const task = database.getTask(comment.taskId);
           events.emit("comment.updated", { comment, task });
           return sendJson(response, 200, { comment });
@@ -2488,6 +2587,15 @@ export function createTaskboardServer(options = {}) {
         if (request.method === "DELETE") {
           const { version } = parseArchive(await readJson(request));
           const comment = database.deleteComment(id, version);
+          await queueTeamOperation({
+            entityType: "comment",
+            entityId: comment.id,
+            operationType: "delete",
+            baseVersion: version,
+            baseSnapshot: comment,
+            change: {},
+            actor: actorFromRequest(request),
+          });
           for (const attachment of comment.attachments) {
             try {
               await unlink(path.join(resolved.attachmentsDirectory, attachment.id));
@@ -2535,6 +2643,21 @@ export function createTaskboardServer(options = {}) {
             await unlink(storagePath);
             throw error;
           }
+          await queueTeamOperation({
+            entityType: "attachment",
+            entityId: attachment.id,
+            operationType: "create",
+            baseVersion: 0,
+            baseSnapshot: null,
+            change: {
+              taskId: attachment.taskId,
+              commentId: attachment.commentId,
+              filename: attachment.filename,
+              contentType: attachment.contentType,
+              contentBase64: body.toString("base64"),
+            },
+            actor: actorFromRequest(request),
+          });
           const task = database.getTask(comment.taskId);
           events.emit("attachment.created", { attachment, comment: database.getComment(commentId), task });
           return sendJson(response, 201, { attachment });
@@ -2575,6 +2698,20 @@ export function createTaskboardServer(options = {}) {
             await unlink(storagePath);
             throw error;
           }
+          await queueTeamOperation({
+            entityType: "attachment",
+            entityId: attachment.id,
+            operationType: "create",
+            baseVersion: 0,
+            baseSnapshot: null,
+            change: {
+              taskId: attachment.taskId,
+              filename: attachment.filename,
+              contentType: attachment.contentType,
+              contentBase64: body.toString("base64"),
+            },
+            actor: actorFromRequest(request),
+          });
           events.emit("attachment.created", { attachment, task });
           return sendJson(response, 201, { attachment });
         }
@@ -2667,11 +2804,21 @@ export function createTaskboardServer(options = {}) {
         }
         if (!action && request.method === "PATCH") {
           const actor = actorFromRequest(request);
+          const baseTask = database.getTask(id);
           const { version, changes, threadId, assigneeTarget } = parseTaskPatch(await readJson(request));
           if (assigneeTarget !== undefined) {
             changes.assignee = resolveAssignee(assigneeTarget, actor);
           }
           const task = database.updateTask(id, version, changes, threadId, actor);
+          await queueTeamOperation({
+            entityType: "task",
+            entityId: task.id,
+            operationType: "update",
+            baseVersion: version,
+            baseSnapshot: baseTask,
+            change: changes,
+            actor,
+          });
           events.emit("task.updated", { task });
           return sendJson(response, 200, { task });
         }
@@ -2771,9 +2918,11 @@ export function createTaskboardServer(options = {}) {
         else server.listen({ fd });
       });
       listening = true;
+      if (options.enableTeamSyncTimer !== false) void teamSyncWorker.start();
       return server.address();
     },
     async close() {
+      teamSyncWorker.stop?.();
       const serverClosed = listening
         ? new Promise((resolve, reject) => {
             server.close((error) => error ? reject(error) : resolve());
