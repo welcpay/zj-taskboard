@@ -91,6 +91,14 @@
     return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
 
+  function hostText(chinese, english) {
+    const language = String(document.documentElement.lang || navigator.language || "")
+      .trim()
+      .replaceAll("_", "-")
+      .toLowerCase();
+    return language === "zh" || language.startsWith("zh-") ? chinese : english;
+  }
+
   function normalizeThreadId(value) {
     return String(value || "").trim().replace(/^(?:local|cloud):/i, "");
   }
