@@ -23,6 +23,7 @@
     "app:preflight": "node scripts/preflight-macos-app.mjs",
     "app:verify-packaged-taskctl": "node scripts/verify-packaged-taskctl.mjs",
     "app:verify-release": "node scripts/verify-macos-release.mjs",
+    "verify:daemon-team-e2e": "npm run app:prepare && node scripts/verify-daemon-lifecycle.mjs && node --test test/team-sync.test.mjs test/team-sync-api.test.mjs",
     "tauri": "tauri",
     "dev": "node scripts/dev.mjs",
     "dev:server": "node --watch server/index.mjs --dev",
