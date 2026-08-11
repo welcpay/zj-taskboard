@@ -29,7 +29,9 @@ export function parseTaskboardAutomationHostRequest(value) {
   if (!validProjectId(value.taskboardProjectId)) return null;
   if (!validText(value.codexProjectId, 256) || !validText(value.projectName, 200)) return null;
   if (!validAbsolutePath(value.workspacePath) || !validAbsolutePath(value.skillPath)) return null;
-  if (!validIntervalMinutes(value.intervalMinutes)) return null;
+  if (!Number.isInteger(value.intervalMinutes)
+    || value.intervalMinutes < 0
+    || value.intervalMinutes > 60) return null;
   if (!isSupportedModelEffort(value.model, value.reasoningEffort)) return null;
   if (value.automationId !== undefined && !validText(value.automationId, 256)) return null;
   if (typeof value.enabledByUser !== "boolean" || typeof value.quotaAware !== "boolean") return null;
@@ -58,20 +60,39 @@ export function buildTaskboardAutomationName(request) {
 }
 
 export function buildTaskboardAutomationPrompt(request) {
+  const automationName = buildTaskboardAutomationName(request);
+  const taskctlCommand = buildTaskctlCommand(request);
   const lockPath = path.join(
     "~/Library/Application Support/Codex Taskboard/automation-locks",
     `${request.taskboardProjectId}.lock`,
   );
   return [
     `[$manage-taskboard](${request.skillPath}) e-taskboard 每 ${request.intervalMinutes} 分钟检查任务面板中的「${request.projectName}」项目（项目 ID：${request.taskboardProjectId}，项目目录：${request.workspacePath}）。`,
-    "若当前没有 todo，立即归档本次 Codex 任务并结束，不要在任务列表保留空的自动认领聊天。",
+    `本轮所有 taskctl 操作都使用完整命令前缀 ${taskctlCommand}，不要使用 PATH 中的 taskctl。`,
+    `开始时先运行 ${taskctlCommand} issue list --project ${request.taskboardProjectId} --status todo --json。若没有 todo，立即归档本次 Codex 任务，并使用 Codex automation_update 将名为「${automationName}」的当前自动化设为 PAUSED，保留其他字段，然后结束；不要在任务列表保留空的自动认领聊天。`,
     `开始读取或修改议题前，先用 mkdir 原子创建项目专属锁目录 ${lockPath}。若目录已存在，说明上一轮仍在执行：立即归档当前 Codex 任务并结束，不得读取、认领或修改议题。只有成功持有锁后才可继续，并在正常结束或失败退出前删除自己持有的锁目录。`,
-    "每次仅处理一个 todo：先用 issue get 读取最新议题内容，并用 comment list 读取全部评论，确认是否包含已完成后被打回的返工要求。",
-    "认领时使用最新 version 将议题移动到 in_progress；若发生版本冲突或最新状态已变化，立即跳过，避免多个 Agent 抢同一任务。",
+    "每次仅处理一个 todo：选定后先用 issue get 读取最新议题内容，并用 comment list 读取全部评论。根据描述和最新评论判断是否允许开始；若其中写明等待、暂不执行或当前不应开始，立即跳过并报告，不改状态。评论也包含已完成后被打回的返工要求。",
+    "确认允许开始后，必须在读取代码、下载附件、分析或实施前，使用刚读取的 version 将仍可认领的 todo 移到 in_progress；写入成功前不得继续。不得认领已被其他会话绑定或其他 Agent 领取的议题。",
     "认领成功后，必须把重命名作为下一步动作：立即调用 Codex 的 set_thread_title 工具，将当前任务标题设置为《YYYY-MM-DD HH:mm 议题名称 自动认领》；不要只在回复文字中写标题。时间使用 Asia/Shanghai 时区的实际认领时间，议题名称使用刚刚认领议题的完整标题。若 set_thread_title 调用失败，先重试一次，再继续任何实现工作。",
+    "若因 version 陈旧发生版本冲突，重新运行 issue get 和 comment list；仅当仍为可认领 todo、未绑定其他会话、未归档且描述和最新评论未变化时，用最新 version 重试一次。若已被认领、状态或要求已变、已归档、服务或永久 API 错误，或重试仍失败，立即跳过该议题、退出并报告；不得抢占或循环重试。",
+    "若首次 issue get 返回 threadId，议题已绑定原会话：不要在当前自动化会话认领；使用 Codex send_message_to_thread 向原会话发送继续处理指令，由原会话按上述协议判断和认领，然后结束当前自动化会话。若没有 threadId，则在当前自动化会话处理。",
     "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
     "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用最新 version 将议题移动到 in_review；不要直接标记为 done。",
+    `本次处理或交接后，再次运行 ${taskctlCommand} issue list --project ${request.taskboardProjectId} --status todo --json。若没有 todo，使用 Codex automation_update 将名为「${automationName}」的当前自动化设为 PAUSED，保留其他字段，避免后续创建空会话。`,
   ].join("\n");
+}
+
+function buildTaskctlCommand(request) {
+  const cliPath = path.resolve(path.dirname(request.skillPath), "../..", "cli/taskctl.mjs");
+  const command = `${shellQuote(process.execPath)} ${shellQuote(cliPath)}`;
+  const runtimeFilePath = process.env.CODEX_TASKBOARD_RUNTIME_FILE;
+  return runtimeFilePath
+    ? `CODEX_TASKBOARD_RUNTIME_FILE=${shellQuote(runtimeFilePath)} ${command}`
+    : command;
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 export function buildTaskboardAutomationSpec(request) {
@@ -100,6 +121,27 @@ export function shouldActivateTaskboardAutomation({
     && intervalMinutes > 0
     && hasTodo
     && (!quotaAware || quotaState === "available");
+}
+
+export function taskboardAutomationPolicyOperation(request, {
+  explicit,
+  previousQuotaState,
+  quotaState,
+  currentStatus,
+}) {
+  if (!request.enabledByUser) return "pause";
+  if (
+    !explicit
+    && currentStatus === "PAUSED"
+    && (!request.quotaAware || previousQuotaState === "available")
+  ) return "list";
+  if (request.quotaAware && quotaState !== "available") return "pause";
+  if (
+    explicit
+    || currentStatus === undefined
+    || (request.quotaAware && previousQuotaState !== "available")
+  ) return "ensure-active";
+  return "ensure-active";
 }
 
 export async function reconcileTaskboardAutomation(request, rpc) {
@@ -161,15 +203,8 @@ function sanitizeAutomation(item) {
 }
 
 function validRrule(value) {
-  if (typeof value !== "string") return false;
-  const match = /^RRULE:FREQ=MINUTELY;INTERVAL=(\d+)$/.exec(value);
-  return match !== null && validIntervalMinutes(Number(match[1]), { allowPause: false });
-}
-
-function validIntervalMinutes(value, { allowPause = true } = {}) {
-  return Number.isInteger(value)
-    && value >= (allowPause ? 0 : 1)
-    && value <= 60;
+  return typeof value === "string"
+    && /^RRULE:FREQ=MINUTELY;INTERVAL=([1-9]|[1-5][0-9]|60)$/.test(value);
 }
 
 function automationMatchesSpec(item, spec, status) {

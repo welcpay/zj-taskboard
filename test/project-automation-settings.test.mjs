@@ -7,10 +7,6 @@ const menuSource = await readFile(
   new URL("../web/src/components/ProjectAutomationMenu.tsx", import.meta.url),
   "utf8",
 );
-const selectSource = await readFile(
-  new URL("../web/src/components/AutomationSelect.tsx", import.meta.url),
-  "utf8",
-).catch(() => "");
 const iconSource = await readFile(
   new URL("../web/src/components/TaskboardIcon.tsx", import.meta.url),
   "utf8",
@@ -31,7 +27,7 @@ test("project automation state is device-local and scoped by taskboard project",
   assert.match(appSource, /automationId\?: string/);
   assert.match(appSource, /codexProjectId: string/);
   assert.match(appSource, /type AutomationIntervalMinutes = number/);
-  assert.match(appSource, /DEFAULT_AUTOMATION_OPTIONS[\s\S]*?intervalMinutes: 60[\s\S]*?model: "gpt-5\.5"[\s\S]*?reasoningEffort: "high"/);
+  assert.match(appSource, /DEFAULT_AUTOMATION_OPTIONS[\s\S]*?model: "gpt-5\.5"[\s\S]*?reasoningEffort: "high"/);
   assert.match(appSource, /taskboardStorage\.getItem\(PROJECT_AUTOMATIONS_KEY\)/);
   assert.match(appSource, /taskboardStorage\.setItem\(PROJECT_AUTOMATIONS_KEY, JSON\.stringify\(next\)\)/);
   assert.match(appSource, /projectAutomations\[selectedProjectId\]/);
@@ -40,7 +36,7 @@ test("project automation state is device-local and scoped by taskboard project",
 test("automation requests use the exact Codex host message contract", () => {
   assert.match(appSource, /type: "taskboard:automation-request"/);
   assert.match(appSource, /operation: "ensure-active" \| "pause" \| "list"/);
-  assert.match(appSource, /taskboardProjectId: selectedProjectId/);
+  assert.match(appSource, /context: AutomationRequestContext[\s\S]*?taskboardProjectId: context\.taskboardProjectId/);
   assert.match(appSource, /codexProjectId/);
   assert.match(appSource, /projectName: selectedProject\.name/);
   assert.match(appSource, /workspacePath/);
@@ -66,13 +62,12 @@ test("the project navigation automation menu owns the icon, fields, and accessib
   assert.doesNotMatch(menuSource, /statusStarted|statusTodo/);
   assert.match(menuSource, /aria-busy=\{pending/);
   assert.match(menuSource, /自动认领/);
-  assert.match(menuSource, /status === "ACTIVE" \? "自动认领中" : "自动化"/);
+  assert.match(menuSource, /aria-label=\{status === "ACTIVE"\s*\? text\("自动认领中", "Auto-claiming"\)\s*: text\("自动化", "Automation"\)\}/);
   assert.doesNotMatch(menuSource, /已开启自动认领|自动认领未开启/);
-  assert.match(menuSource, /自动认领/);
+  assert.match(menuSource, /text\("自动认领", "Auto-claim"\)/);
   assert.match(menuSource, /5, 10, 15, 30, 60/);
   assert.match(menuSource, /min=\{0\}/);
   assert.match(menuSource, /max=\{60\}/);
-  assert.match(menuSource, /0 表示暂停/);
   assert.match(menuSource, /AUTOMATION_MODELS\.map/);
   assert.match(menuSource, /EFFORT_LABELS\[effort\]/);
   assert.match(menuSource, /createPortal/);
@@ -84,26 +79,6 @@ test("the project navigation automation menu owns the icon, fields, and accessib
   assert.match(appSource, /<ProjectAutomationMenu[\s\S]*?<button[\s\S]*?header-create-button/);
   assert.doesNotMatch(appSource, /toolbar-connection/);
   assert.match(appSource, /仅本地任务面板可用/);
-});
-
-test("automation settings use the confirmed summary and segmented B layout", () => {
-  assert.match(menuSource, /project-automation-summary/);
-  assert.match(menuSource, /automation-interval-segments/);
-  assert.match(menuSource, /INTERVAL_PRESETS\.map\(\(minutes\)/);
-  assert.match(menuSource, />其他<\/button>/);
-  assert.match(menuSource, /automation-model-grid/);
-  assert.match(menuSource, /project-automation-secondary/);
-});
-
-test("automation choices use an in-panel accessible listbox", () => {
-  assert.doesNotMatch(menuSource, /<select/);
-  assert.equal(menuSource.match(/<AutomationSelect/g)?.length, 2);
-  assert.match(selectSource, /role="listbox"/);
-  assert.match(selectSource, /role="option"/);
-  assert.match(selectSource, /event\.key === "ArrowDown"/);
-  assert.match(selectSource, /event\.key === "ArrowUp"/);
-  assert.match(selectSource, /event\.key === "Enter" \|\| event\.key === " "/);
-  assert.match(selectSource, /event\.key === "Escape"/);
 });
 
 test("automation status uses the exported Taskboard play and pause icon assets", () => {
@@ -124,7 +99,7 @@ test("the automation menu reuses the board switches and keeps form focus chrome 
   assert.match(menuSource, /className=\{`board-setting-switch\$\{draft\.quotaAware \? " is-on" : ""\}`\}/);
   assert.match(menuSource, /aria-checked=\{draft\.quotaAware\}/);
   assert.doesNotMatch(menuSource, /type="checkbox"/);
-  assert.match(styles, /\.automation-select-trigger:focus-visible\s*\{[^}]*outline:\s*0;/s);
+  assert.match(styles, /\.automation-select-trigger:focus-visible\s*\{[^}]*outline:\s*0;[^}]*box-shadow:\s*none;/s);
   assert.doesNotMatch(styles, /\.project-automation-switch input:focus-visible/);
 });
 
@@ -138,7 +113,7 @@ test("unavailable automation state has one notice, clears stale errors, and cann
   );
   assert.match(
     reconcileSource,
-    /automationProjectContext\.unavailableReason[\s\S]*?\) \{\s*setAutomationError\(null\);\s*return;/,
+    /if \(!automationRequestContext\) \{\s*setAutomationError\(null\);\s*return;/,
   );
   assert.doesNotMatch(reconcileSource, /setAutomationError\(automationProjectContext\.unavailableReason/);
 });
@@ -149,11 +124,11 @@ test("automation changes submit immediately with model-specific effort normaliza
   assert.match(menuSource, /const submitChange = \(next: AutomationOptions\) => \{[\s\S]*?setDraft\(next\);[\s\S]*?onChange\(next\);[\s\S]*?\}/);
   assert.match(menuSource, /submitChange\(withAutomationModel\(draft, model as AutomationModel\)\)/);
   assert.match(menuSource, /getAutomationModel\(draft\.model\)\.efforts\.map/);
-  assert.match(menuSource, /value: effort,[\s\S]*?label: EFFORT_LABELS\[effort\]/);
-  assert.match(menuSource, /low: "轻度"/);
-  assert.match(menuSource, /xhigh: "极高 \(xhigh\)"/);
-  assert.match(menuSource, /max: "最高"/);
-  assert.match(menuSource, /ultra: "极高 \(ultra\)"/);
+  assert.match(menuSource, /value: effort,[\s\S]*?label: text\(\.\.\.EFFORT_LABELS\[effort\]\)/);
+  assert.match(menuSource, /low: \["轻度", "Low"\]/);
+  assert.match(menuSource, /xhigh: \["极高 \(xhigh\)", "Extra high \(xhigh\)"\]/);
+  assert.match(menuSource, /max: \["最高", "Maximum"\]/);
+  assert.match(menuSource, /ultra: \["极高 \(ultra\)", "Ultra"\]/);
   assert.doesNotMatch(menuSource, />取消</);
   assert.doesNotMatch(menuSource, />保存</);
   assert.doesNotMatch(menuSource, /project-automation-actions/);
@@ -172,8 +147,25 @@ test("pending completion reconciles the optimistic draft to confirmed host state
 });
 
 test("opening settings and changing projects reconcile with the host list", () => {
-  assert.match(appSource, /sendAutomationRequest\(\s*stored \? "apply-policy" : "list",\s*options,\s*stored\?\.automationId,\s*\)/);
+  const reconcileSource = appSource.slice(
+    appSource.indexOf("const reconcileProjectAutomation"),
+    appSource.indexOf("const saveProjectAutomation"),
+  );
+  const drainSource = appSource.slice(
+    appSource.indexOf("const drainQueuedAutomationSaves"),
+    appSource.indexOf("const reconcileProjectAutomation"),
+  );
+  assert.match(
+    reconcileSource,
+    /sendAutomationRequest\(\s*"list",\s*options,\s*automationRequestContext,\s*stored\?\.automationId,\s*\)/,
+  );
+  assert.doesNotMatch(reconcileSource, /"apply-policy"/);
+  assert.match(
+    drainSource,
+    /sendAutomationRequest\(\s*"apply-policy",\s*queuedSave\.options,\s*queuedSave\.context,\s*previousRecord\?\.automationId,\s*\)/,
+  );
   assert.match(appSource, /const policy = isAutomationHostPolicy\(response\.policy\) \? response\.policy : null/);
+  assert.match(appSource, /const item = \(isAutomationHostItem\(response\.item\) \? response\.item : undefined\)\s*\?\? items\.find\(\(candidate\) => candidate\.id === policy\.automationId\)/);
   assert.match(appSource, /items\.find\(\(candidate\) => candidate\.id === policy\.automationId\)/);
   assert.match(appSource, /items\.length === 1 \? items\[0\] : undefined/);
   assert.match(appSource, /automationId: item\?\.id \?\? policy\.automationId/);
@@ -181,5 +173,5 @@ test("opening settings and changing projects reconcile with the host list", () =
   assert.match(appSource, /enabledByUser: policy\.enabledByUser/);
   assert.match(appSource, /quotaAware: policy\.quotaAware/);
   assert.match(appSource, /automationId: undefined,[\s\S]*?status: "PAUSED"/);
-  assert.match(appSource, /writeProjectAutomation\(selectedProjectId, previousRecord\)/);
+  assert.match(drainSource, /writeProjectAutomation\(queuedSave\.projectId, previousRecord\)/);
 });

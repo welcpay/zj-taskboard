@@ -9,6 +9,7 @@ import {
 } from "../../../shared/taskboard-automation-options.mjs";
 import { AutomationSelect } from "./AutomationSelect";
 import { TaskboardIcon } from "./TaskboardIcon";
+import { useTaskboardI18n } from "../i18n";
 
 type AutomationStatus = "ACTIVE" | "PAUSED";
 type AutomationQuotaState = "available" | "blocked" | "unknown" | "unavailable";
@@ -52,13 +53,13 @@ const DEFAULT_OPTIONS: AutomationOptions = {
 
 const INTERVAL_PRESETS = [5, 10, 15, 30, 60] as const;
 
-const EFFORT_LABELS: Record<AutomationReasoningEffort, string> = {
-  low: "轻度",
-  medium: "中",
-  high: "高",
-  xhigh: "极高 (xhigh)",
-  max: "最高",
-  ultra: "极高 (ultra)",
+const EFFORT_LABELS: Record<AutomationReasoningEffort, readonly [string, string]> = {
+  low: ["轻度", "Low"],
+  medium: ["中", "Medium"],
+  high: ["高", "High"],
+  xhigh: ["极高 (xhigh)", "Extra high (xhigh)"],
+  max: ["最高", "Maximum"],
+  ultra: ["极高 (ultra)", "Ultra"],
 };
 
 export function ProjectAutomationMenu({
@@ -69,6 +70,7 @@ export function ProjectAutomationMenu({
   onOpen,
   onChange,
 }: ProjectAutomationMenuProps) {
+  const { locale, text } = useTaskboardI18n();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const wasPendingRef = useRef(pending);
@@ -82,16 +84,16 @@ export function ProjectAutomationMenu({
   const status = automation?.status ?? "PAUSED";
   const quota = automation?.quota;
   const stateLabel = !automation?.enabledByUser
-    ? "已暂停"
+    ? text("已暂停", "Paused")
     : automation.quotaAware && quota?.state === "blocked"
-      ? "额度暂停"
+      ? text("额度暂停", "Paused by quota")
       : automation.quotaAware && quota?.state === "unavailable"
-        ? "额度不可用"
+        ? text("额度不可用", "Quota unavailable")
         : automation.quotaAware && (!quota || quota.state === "unknown")
-          ? "额度未知"
+          ? text("额度未知", "Quota unknown")
           : status === "ACTIVE"
-            ? "运行中"
-            : "已暂停";
+            ? text("运行中", "Running")
+            : text("已暂停", "Paused");
   const disabled = pending || Boolean(unavailableReason);
 
   useEffect(() => {
@@ -166,7 +168,7 @@ export function ProjectAutomationMenu({
   const submitCustomInterval = () => {
     const intervalMinutes = Number(customInterval);
     if (!Number.isInteger(intervalMinutes) || intervalMinutes < 0 || intervalMinutes > 60) {
-      setIntervalError("请输入 0–60 的整数，0 表示暂停");
+      setIntervalError(text("请输入 0–60 的整数，0 表示暂停", "Enter an integer from 0 to 60; 0 pauses it."));
       return;
     }
     setIntervalError(null);
@@ -182,16 +184,16 @@ export function ProjectAutomationMenu({
       ref={menuRef}
       className="project-automation-menu no-drag"
       role="dialog"
-      aria-label="自动认领待办设置"
+      aria-label={text("自动认领待办设置", "Auto-claim settings")}
       style={{ left: position.left, top: position.top, visibility: position.ready ? "visible" : "hidden" }}
     >
       <div className="project-automation-summary">
         <div className="project-automation-menu-heading">
-          <div><strong>自动认领待办</strong><small>周期检查等待认领的任务</small></div>
+          <div><strong>{text("自动认领待办", "Auto-claim tasks")}</strong><small>{text("周期检查等待认领的任务", "Check periodically for unclaimed tasks")}</small></div>
           <span className={status === "ACTIVE" ? "is-active" : "is-paused"}>{stateLabel}</span>
         </div>
         <div className="project-automation-switch">
-          <span>自动认领</span>
+          <span>{text("自动认领", "Auto-claim")}</span>
           <button type="button" className={`board-setting-switch${draft.enabledByUser ? " is-on" : ""}`}
             role="switch" aria-checked={draft.enabledByUser} disabled={disabled}
             onClick={() => submitChange({ ...draft, enabledByUser: !draft.enabledByUser })}>
@@ -200,8 +202,8 @@ export function ProjectAutomationMenu({
         </div>
       </div>
       <div className="project-automation-field">
-        <span>检查间隔</span>
-        <div className="automation-interval-segments" role="group" aria-label="自动认领间隔">
+        <span>{text("检查间隔", "Check interval")}</span>
+        <div className="automation-interval-segments" role="group" aria-label={text("自动认领间隔", "Auto-claim interval")}>
           {INTERVAL_PRESETS.map((minutes) => (
             <button key={minutes} type="button" disabled={disabled}
               className={!customIntervalSelected && draft.intervalMinutes === minutes ? "is-selected" : ""}
@@ -212,11 +214,11 @@ export function ProjectAutomationMenu({
               }}>{minutes}</button>
           ))}
           <button type="button" disabled={disabled} className={customIntervalSelected ? "is-selected" : ""}
-            onClick={() => setCustomIntervalSelected(true)}>其他</button>
+            onClick={() => setCustomIntervalSelected(true)}>{text("其他", "Custom")}</button>
         </div>
         {customIntervalSelected && <div className="automation-custom-interval">
           <input
-            aria-label="其他自动认领间隔"
+            aria-label={text("其他自动认领间隔", "Custom auto-claim interval")}
             type="number"
             min={0}
             max={60}
@@ -229,16 +231,16 @@ export function ProjectAutomationMenu({
               if (event.key === "Enter") submitCustomInterval();
             }}
           />
-          <span>分钟</span>
+          <span>{text("分钟", "min")}</span>
         </div>}
-        {customIntervalSelected && <small>输入 0–60，0 表示暂停</small>}
+        {customIntervalSelected && <small>{text("输入 0–60，0 表示暂停", "Enter 0–60; 0 pauses it")}</small>}
         {intervalError && <p className="automation-interval-error" role="alert">{intervalError}</p>}
       </div>
       <div className="automation-model-grid">
       <div className="project-automation-field">
-        <span>模型</span>
+        <span>{text("模型", "Model")}</span>
         <AutomationSelect
-          ariaLabel="自动认领模型"
+          ariaLabel={text("自动认领模型", "Auto-claim model")}
           value={draft.model}
           options={AUTOMATION_MODELS.map((model) => ({ value: model.slug, label: model.label }))}
           disabled={disabled}
@@ -248,13 +250,13 @@ export function ProjectAutomationMenu({
         />
       </div>
       <div className="project-automation-field">
-        <span>推理强度</span>
+        <span>{text("推理强度", "Reasoning effort")}</span>
         <AutomationSelect
-          ariaLabel="自动认领推理强度"
+          ariaLabel={text("自动认领推理强度", "Auto-claim reasoning effort")}
           value={draft.reasoningEffort}
           options={getAutomationModel(draft.model).efforts.map((effort) => ({
             value: effort,
-            label: EFFORT_LABELS[effort],
+            label: text(...EFFORT_LABELS[effort]),
           }))}
           disabled={disabled}
           open={openSelect === "effort"}
@@ -268,7 +270,7 @@ export function ProjectAutomationMenu({
       </div>
       <div className="project-automation-secondary">
         <div className="project-automation-switch">
-          <span>根据额度启用/关闭</span>
+          <span>{text("根据额度启用/关闭", "Use quota limits")}</span>
           <button type="button" className={`board-setting-switch${draft.quotaAware ? " is-on" : ""}`}
             role="switch" aria-checked={draft.quotaAware} disabled={disabled}
             onClick={() => submitChange({ ...draft, quotaAware: !draft.quotaAware })}>
@@ -276,10 +278,10 @@ export function ProjectAutomationMenu({
           </button>
         </div>
         {draft.quotaAware && <div className={`project-automation-quota is-${quota?.state ?? "unknown"}`}>
-          {quota?.state === "available" && "当前额度可用"}
-          {quota?.state === "blocked" && (quota.resetsAt ? `额度已用尽，预计 ${formatResetTime(quota.resetsAt)} 恢复` : "额度已用尽，自动认领已暂停")}
-          {quota?.state === "unavailable" && (quota.reason === "api-key" ? "API Key 模式不支持读取 Codex App 额度" : "当前账户无法读取额度")}
-          {(!quota || quota.state === "unknown") && "额度状态未知，自动认领已暂停"}
+          {quota?.state === "available" && text("当前额度可用", "Quota is available")}
+          {quota?.state === "blocked" && (quota.resetsAt ? text(`额度已用尽，预计 ${formatResetTime(quota.resetsAt, locale)} 恢复`, `Quota is exhausted. Expected reset: ${formatResetTime(quota.resetsAt, locale)}.`) : text("额度已用尽，自动认领已暂停", "Quota is exhausted. Auto-claim is paused."))}
+          {quota?.state === "unavailable" && (quota.reason === "api-key" ? text("API Key 模式不支持读取 Codex App 额度", "API key mode cannot read the Codex app quota.") : text("当前账户无法读取额度", "This account cannot read quota information."))}
+          {(!quota || quota.state === "unknown") && text("额度状态未知，自动认领已暂停", "Quota status is unknown. Auto-claim is paused.")}
         </div>}
       </div>
       {unavailableReason && <p className="project-automation-note">{unavailableReason}</p>}
@@ -294,11 +296,11 @@ export function ProjectAutomationMenu({
         ref={triggerRef}
         type="button"
         className={`project-automation-trigger no-drag ${status === "ACTIVE" ? "is-active" : "is-paused"}`}
-        aria-label={status === "ACTIVE" ? "自动认领中" : "自动化"}
+        aria-label={status === "ACTIVE" ? text("自动认领中", "Auto-claiming") : text("自动化", "Automation")}
         aria-busy={pending}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={status === "ACTIVE" ? "自动认领中" : "自动化"}
+        title={status === "ACTIVE" ? text("自动认领中", "Auto-claiming") : text("自动化", "Automation")}
         onClick={() => {
           if (!open) {
             setPosition((current) => ({ ...current, ready: false }));
@@ -308,15 +310,15 @@ export function ProjectAutomationMenu({
         }}
       >
         <TaskboardIcon name={status === "ACTIVE" ? "automationPause" : "automationPlay"} />
-        <span>{status === "ACTIVE" ? "自动认领中" : "自动化"}</span>
+        <span>{status === "ACTIVE" ? text("自动认领中", "Auto-claiming") : text("自动化", "Automation")}</span>
       </button>
       {menu}
     </>
   );
 }
 
-function formatResetTime(value: number) {
-  return new Intl.DateTimeFormat("zh-CN", {
+function formatResetTime(value: number, locale: string) {
+  return new Intl.DateTimeFormat(locale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",

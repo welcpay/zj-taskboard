@@ -48,7 +48,7 @@ test("text selection is reserved for editable fields", () => {
 test("main issue cards stay compact while sidebar cards show ownership and creation time", () => {
   assert.doesNotMatch(cardSource, /projectName|project-chip/);
   assert.match(cardSource, /variant === "sidebar" && \([\s\S]*?className="sidebar-card-creator"/);
-  assert.match(cardSource, /<AssigneeControl[\s\S]*?<span>\{createdDate\(task\.createdAt\)\}<\/span>/);
+  assert.match(cardSource, /<AssigneeControl[\s\S]*?<span>\{createdDate\(task\.createdAt, locale, text\)\}<\/span>/);
   assert.doesNotMatch(styles, /\.card-footer|\.created-at|\.project-chip/);
   assert.match(styles, /\.task-card \{[\s\S]*?min-height: 80px;[\s\S]*?gap: 6px;[\s\S]*?padding: 7px 8px/);
   assert.match(detailSource, /currentTask\.createdAt/);
@@ -83,6 +83,12 @@ test("scrollbars stay proportional while the workflow node library hides its bar
   assert.doesNotMatch(styles, /\*::\-webkit-scrollbar-thumb:(?:vertical|horizontal)/);
   assert.match(styles, /\.workflow-node-groups \{[\s\S]*?overflow-y: auto;[\s\S]*?scrollbar-width: none/);
   assert.match(styles, /\.workflow-node-groups::\-webkit-scrollbar \{[\s\S]*?display: none;[\s\S]*?width: 0;[\s\S]*?height: 0/);
+});
+
+test("native select options remain readable in dark theme", () => {
+  assert.match(styles, /:root\[data-theme="dark"\] select \{[\s\S]*?color-scheme: dark/);
+  assert.match(styles, /:root\[data-theme="dark"\] select option \{[\s\S]*?background-color: var\(--surface-raised\);[\s\S]*?color: var\(--text-primary\)/);
+  assert.match(styles, /:root\[data-theme="dark"\] select option:checked \{[\s\S]*?background-color: var\(--surface-active\)/);
 });
 
 test("each status column remains a drop target for the full board height", () => {
@@ -152,7 +158,7 @@ test("common issue mutations enter a Linear-style undo queue", () => {
   assert.match(appSource, /void performUndo\(\)/);
   assert.match(appSource, /moveTask\(task, destination, beforeTaskId, true\)/);
   assert.match(appSource, /className="toast undo-toast"/);
-  assert.match(appSource, />\s*撤回 <kbd>\{undoShortcut\}<\/kbd>/);
+  assert.match(appSource, />\s*\{text\("撤回", "Undo"\)\} <kbd>\{undoShortcut\}<\/kbd>/);
   assert.match(appSource, /restoreTaskRequest\(archived\)/);
   assert.match(apiSource, /export async function restoreTask/);
 });
@@ -165,7 +171,7 @@ test("issues expose processing conversations without manual binding", () => {
   assert.doesNotMatch(editorSource, /对话 ID|linkedThreadId/);
   assert.match(detailSource, /currentTask\.threadId/);
   assert.doesNotMatch(detailSource, /currentTask\.threadIds/);
-  assert.match(detailSource, /<strong>查看对话<\/strong>/);
+  assert.match(detailSource, /<strong>\{text\("查看对话", "View conversation"\)\}<\/strong>/);
   assert.match(detailSource, /className="conversation-thread-id">\{threadId\}/);
   assert.doesNotMatch(detailSource, /shortThreadId/);
   assert.doesNotMatch(detailSource, /detail-property-label">Codex/);
@@ -217,8 +223,8 @@ test("issue creation and detail share one searchable, creatable label picker", (
   assert.doesNotMatch(detailSource, /标签，以逗号分隔|function saveLabels|labels\.split/);
   assert.match(labelPickerSource, /availableLabels\.filter/);
   assert.match(labelPickerSource, /selectedLabels\.includes\(label\)/);
-  assert.match(labelPickerSource, /创建 “\{normalizedSearch\}”/);
-  assert.match(labelPickerSource, /labelPresentation\(normalizedSearch\)\.color/);
+  assert.match(labelPickerSource, /text\(`创建 “\$\{normalizedSearch\}”`, `Create “\$\{normalizedSearch\}”`\)/);
+  assert.match(labelPickerSource, /labelPresentation\(normalizedSearch, language\)\.color/);
   assert.match(labelPickerSource, /aria-multiselectable="true"/);
   assert.match(styles, /\.detail-label-picker \.label-popover/);
 });

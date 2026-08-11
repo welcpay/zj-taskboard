@@ -1577,13 +1577,16 @@ export function createTaskboardServer(options = {}) {
       } catch {}
     }
 
-    const turnStates = new Map();
+    let runningTurnId = null;
     for (const record of records) {
       const payload = record?.payload;
       if (record?.type !== "event_msg" || typeof payload?.turn_id !== "string") continue;
-      if (payload.type === "task_started") turnStates.set(payload.turn_id, true);
-      if (payload.type === "task_complete" || payload.type === "turn_aborted") {
-        turnStates.set(payload.turn_id, false);
+      if (payload.type === "task_started") runningTurnId = payload.turn_id;
+      if (
+        (payload.type === "task_complete" || payload.type === "turn_aborted")
+        && payload.turn_id === runningTurnId
+      ) {
+        runningTurnId = null;
       }
     }
 
@@ -1621,7 +1624,7 @@ export function createTaskboardServer(options = {}) {
     const state = {
       completed: progress?.completed ?? null,
       total: progress?.total ?? null,
-      running: [...turnStates.values()].some(Boolean),
+      running: runningTurnId !== null,
     };
     codexSessionStateCache.set(sessionPath, {
       size: sessionStat.size,
@@ -1649,6 +1652,11 @@ export function createTaskboardServer(options = {}) {
     try {
       const incomingUrl = new URL(request.url, "http://127.0.0.1");
       if (resolved.instanceToken && incomingUrl.pathname !== "/health") {
+        if (incomingUrl.pathname === routePrefix) {
+          response.writeHead(301, { location: `${incomingUrl.pathname}/${incomingUrl.search}` });
+          response.end();
+          return;
+        }
         if (
           incomingUrl.pathname !== routePrefix
           && !incomingUrl.pathname.startsWith(`${routePrefix}/`)
@@ -2527,6 +2535,19 @@ export function createTaskboardServer(options = {}) {
           events.emit("task.updated", { task });
           return sendJson(response, 200, { task });
         }
+        if (!action && request.method === "DELETE") {
+          const { version } = parseArchive(await readJson(request));
+          const deleted = database.deleteArchivedTask(id, version);
+          for (const attachmentId of deleted.attachmentIds) {
+            try {
+              await unlink(path.join(resolved.attachmentsDirectory, attachmentId));
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+            }
+          }
+          events.emit("task.deleted", { task: deleted.task });
+          return sendEmpty(response, 204);
+        }
         if (action === "move" && request.method === "POST") {
           const move = parseMove(await readJson(request));
           const task = database.moveTask(
@@ -2552,7 +2573,7 @@ export function createTaskboardServer(options = {}) {
           events.emit("task.restored", { task });
           return sendJson(response, 200, { task });
         }
-        return methodNotAllowed(response, action ? ["POST"] : ["GET", "PATCH"]);
+        return methodNotAllowed(response, action ? ["POST"] : ["GET", "PATCH", "DELETE"]);
       }
 
       if (pathname.startsWith("/api/")) {

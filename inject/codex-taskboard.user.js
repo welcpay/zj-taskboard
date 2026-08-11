@@ -1229,7 +1229,7 @@
     nextFrame.id = FRAME_ID;
     nextFrame.name = frameName;
     nextFrame.hidden = true;
-    nextFrame.title = "任务面板";
+    nextFrame.title = hostText("任务面板", "Taskboard");
     nextFrame.referrerPolicy = "no-referrer";
     nextFrame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-downloads");
     nextFrame.setAttribute("allow", "clipboard-read; clipboard-write");

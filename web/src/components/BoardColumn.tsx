@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DragEvent } from "react";
 import type { ActorIdentity, Task, TaskDraft, TaskStatus } from "../types";
+import { taskStatusLabel, useTaskboardI18n } from "../i18n";
 import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import { TaskCard } from "./TaskCard";
 import {
@@ -62,6 +63,7 @@ function ColumnStatusIcon({ status }: { status: TaskStatus }) {
 }
 
 interface BoardColumnProps {
+  scrollRef: (element: HTMLDivElement | null) => void;
   status: TaskStatus;
   tasks: Task[];
   presentations: Record<string, TaskCardPresentation>;
@@ -90,6 +92,7 @@ interface BoardColumnProps {
 }
 
 export function BoardColumn({
+  scrollRef,
   status,
   tasks,
   presentations,
@@ -116,7 +119,9 @@ export function BoardColumn({
   onDrop,
   onOpenConversation,
 }: BoardColumnProps) {
+  const { language, text } = useTaskboardI18n();
   const details = STATUS_DETAILS[status];
+  const label = taskStatusLabel(language, status);
   const [dropBeforeTaskId, setDropBeforeTaskId] = useState<string | null | undefined>();
   const taskIndexes = new Map(tasks.map((task, index) => [task.id, index]));
   const remainingTasks = tasks.filter((task) => task.id !== draggedTaskId);
@@ -182,22 +187,22 @@ export function BoardColumn({
           <span className={`column-status-icon status-icon-${details.tone}`}>
             <ColumnStatusIcon status={status} />
           </span>
-          <h2 id={`column-${status}`}>{details.label}</h2>
+          <h2 id={`column-${status}`}>{label}</h2>
         </div>
         <div className="column-actions">
           <button
             type="button"
             className="icon-button add-task-button"
             onClick={() => onCreate(status)}
-            aria-label={`在${details.label}中新建议题`}
-            title={`添加到${details.label}`}
+            aria-label={text(`在${label}中新建议题`, `Create issue in ${label}`)}
+            title={text(`添加到${label}`, `Add to ${label}`)}
           >
             <TaskboardIcon name={COLUMN_ADD_ICONS[status] ?? "columnAdd"} />
           </button>
         </div>
       </header>
 
-      <div className="column-list">
+      <div className="column-list" ref={scrollRef}>
         {tasks.map((task) => {
           const dragShift = getTaskDragShift(task);
           return (

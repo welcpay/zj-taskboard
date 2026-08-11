@@ -30,9 +30,14 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
 };
 
 let currentUserActor = DEFAULT_USER_ACTOR;
+let apiText = (_chinese: string, english: string) => english;
 
 export function setCurrentUserActor(actor?: ActorIdentity) {
   currentUserActor = actor?.type === "user" ? actor : DEFAULT_USER_ACTOR;
+}
+
+export function setApiText(text: typeof apiText) {
+  apiText = text;
 }
 
 interface ApiErrorBody {
@@ -49,7 +54,7 @@ export class ApiError extends Error {
   readonly details?: unknown;
 
   constructor(status: number, body: ApiErrorBody) {
-    super(body.error?.message ?? `Request failed (${status})`);
+    super(body.error?.message ?? apiText(`请求失败（${status}）`, `Request failed (${status})`));
     this.name = "ApiError";
     this.status = status;
     this.code = body.error?.code ?? "REQUEST_FAILED";
@@ -81,11 +86,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(0, {
       error: {
         code: "SERVICE_UNAVAILABLE",
-        message: "无法连接本地 Taskboard 服务，请重新通过 Taskboard 启动 Codex。",
+        message: apiText(
+          "无法连接本地 Taskboard 服务，请重新通过 Taskboard 启动 Codex。",
+          "Could not connect to the local Taskboard service. Start Codex from Taskboard again.",
+        ),
       },
     });
   }
-  const body = (await response.json().catch(() => ({}))) as T & ApiErrorBody;
+  let body: T & ApiErrorBody;
+  try {
+    body = (await response.json()) as T & ApiErrorBody;
+  } catch (error) {
+    if ((error as Error).name === "AbortError") throw error;
+    body = {} as T & ApiErrorBody;
+  }
 
   if (!response.ok) throw new ApiError(response.status, body);
   return body;
@@ -344,10 +358,22 @@ export async function listDevelopmentContexts(
   );
 }
 
-export async function listTasks(projectId: string, signal?: AbortSignal): Promise<Task[]> {
-  const params = new URLSearchParams({ projectId, archived: "false" });
+async function listTasksByArchive(
+  projectId: string,
+  archived: "true" | "false",
+  signal?: AbortSignal,
+): Promise<Task[]> {
+  const params = new URLSearchParams({ projectId, archived });
   const data = await request<{ tasks: Task[] }>(`/api/tasks?${params}`, { signal });
   return data.tasks;
+}
+
+export function listTasks(projectId: string, signal?: AbortSignal): Promise<Task[]> {
+  return listTasksByArchive(projectId, "false", signal);
+}
+
+export function listArchivedTasks(projectId: string, signal?: AbortSignal): Promise<Task[]> {
+  return listTasksByArchive(projectId, "true", signal);
 }
 
 export async function createTask(projectId: string, draft: TaskDraft, threadId?: string): Promise<Task> {
@@ -402,6 +428,13 @@ export async function restoreTask(task: Task, threadId?: string): Promise<Task> 
     },
   );
   return data.task;
+}
+
+export async function deleteArchivedTask(task: Task): Promise<void> {
+  await request(`/api/tasks/${encodeURIComponent(task.id)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ version: task.version }),
+  });
 }
 
 export async function addTaskRelation(
