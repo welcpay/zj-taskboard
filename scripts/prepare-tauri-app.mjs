@@ -8,6 +8,7 @@ import {
   cp,
   link,
   mkdir,
+  readdir,
   readFile,
   rename,
   rm,
@@ -204,8 +205,47 @@ exec "$CONTENTS_DIR/MacOS/node" "$CONTENTS_DIR/Resources/app/cli/taskctl.mjs" "$
   await chmod(taskctlPath, 0o755);
 }
 
+async function runtimeFiles(directory, prefix = "") {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relativePath = path.join(prefix, entry.name);
+    if (entry.isDirectory()) {
+      result.push(...await runtimeFiles(path.join(directory, entry.name), relativePath));
+    } else if (entry.isFile()) {
+      result.push(relativePath);
+    }
+  }
+  return result.sort();
+}
+
+async function prepareDaemonRuntime() {
+  const daemonRuntime = path.join(resourcesDirectory, "daemon-runtime");
+  const daemonApp = path.join(daemonRuntime, "app");
+  const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
+  await rm(daemonRuntime, { recursive: true, force: true });
+  await mkdir(daemonApp, { recursive: true });
+  await Promise.all([
+    copyFile(path.join(binariesDirectory, "node-universal-apple-darwin"), path.join(daemonRuntime, "node")),
+    copyFile(path.join(projectRoot, "scripts", "taskboard-daemon.mjs"), path.join(daemonApp, "taskboard-daemon.mjs")),
+    cp(path.join(projectRoot, "server"), path.join(daemonApp, "server"), { recursive: true }),
+    cp(path.join(projectRoot, "shared"), path.join(daemonApp, "shared"), { recursive: true }),
+    cp(path.join(projectRoot, "dist", "web"), path.join(daemonApp, "dist", "web"), { recursive: true }),
+  ]);
+  await chmod(path.join(daemonRuntime, "node"), 0o755);
+  const files = {};
+  for (const relativePath of await runtimeFiles(daemonRuntime)) {
+    if (relativePath === "runtime-manifest.json") continue;
+    files[relativePath] = await sha256(path.join(daemonRuntime, relativePath));
+  }
+  await writeFile(
+    path.join(daemonRuntime, "runtime-manifest.json"),
+    `${JSON.stringify({ schemaVersion: 1, version: packageJson.version, files }, null, 2)}\n`,
+  );
+}
+
 await mkdir(runtimeCacheDirectory, { recursive: true });
 await copyApplicationResources();
 await prepareNodeRuntime();
+await prepareDaemonRuntime();
 await rm(extractionDirectory, { recursive: true, force: true });
 console.log(`Prepared Tauri resources for ${target} with Node.js ${nodeVersion}`);

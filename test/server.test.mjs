@@ -90,6 +90,24 @@ test("health and the default local project are available", async () => {
   assert.equal(result.body.projects[0].issueCount, 0);
 });
 
+test("daemon health identifies its fixed runtime generation", async () => {
+  const baseUrl = await startServer(() => ({
+    daemonVersion: "0.3.0",
+    runtimePath: "/Users/example/Library/Application Support/Codex Taskboard/runtime/0.3.0",
+    runtimeGeneration: "generation-123",
+  }));
+  const health = await request(baseUrl, "/health");
+  assert.equal(health.response.status, 200);
+  assert.deepEqual(health.body, {
+    status: "ok",
+    product: "codex-taskboard",
+    daemonVersion: "0.3.0",
+    runtimePath: "/Users/example/Library/Application Support/Codex Taskboard/runtime/0.3.0",
+    pid: process.pid,
+    generation: "generation-123",
+  });
+});
+
 test("launcher mode proves service identity and hides every route behind its instance token", async () => {
   const instanceToken = "7a6f8d37-78ce-46c9-87a8-08e10db88da2";
   const instanceSecret = "2e587946-96d6-47b5-930a-1ba70214fa88";

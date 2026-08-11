@@ -1324,6 +1324,15 @@ export function resolveServerOptions(options = {}) {
     version: String(
       options.version ?? process.env.CODEX_TASKBOARD_VERSION ?? "development",
     ).trim(),
+    daemonVersion: String(
+      options.daemonVersion ?? process.env.CODEX_TASKBOARD_DAEMON_VERSION ?? "",
+    ).trim(),
+    runtimePath: String(
+      options.runtimePath ?? process.env.CODEX_TASKBOARD_RUNTIME_PATH ?? "",
+    ).trim(),
+    runtimeGeneration: String(
+      options.runtimeGeneration ?? process.env.CODEX_TASKBOARD_RUNTIME_GENERATION ?? "",
+    ).trim(),
   };
 }
 
@@ -1760,6 +1769,16 @@ export function createTaskboardServer(options = {}) {
             proof: createHmac("sha256", resolved.instanceSecret)
               .update(challenge)
               .digest("hex"),
+          });
+        }
+        if (resolved.daemonVersion) {
+          return sendJson(response, 200, {
+            status: "ok",
+            product: "codex-taskboard",
+            daemonVersion: resolved.daemonVersion,
+            runtimePath: resolved.runtimePath,
+            pid: process.pid,
+            generation: resolved.runtimeGeneration,
           });
         }
         return sendJson(response, 200, { status: "ok" });
