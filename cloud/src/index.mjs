@@ -329,12 +329,45 @@ function decodeBasicCredentials(header) {
 function unauthorized() {
   return json(
     401,
-    { error: { code: "UNAUTHORIZED", message: "Valid Basic credentials are required" } },
+    { error: { code: "UNAUTHORIZED", message: "Valid Basic or Bearer credentials are required" } },
     { "www-authenticate": 'Basic realm="Codex Taskboard", charset="UTF-8"' },
   );
 }
 
+function bytesToHex(bytes) {
+  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function authenticateBearer(header, env) {
+  if (!header?.startsWith("Bearer ")) return null;
+  const token = header.slice(7).trim();
+  if (!token || token.length > 4096) return null;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  const row = await env.DB.prepare(`
+    SELECT team_users.id, team_users.display_name, team_users.role
+    FROM team_access_tokens
+    JOIN team_users ON team_users.id = team_access_tokens.user_id
+    WHERE team_access_tokens.token_hash = ? AND team_access_tokens.revoked_at IS NULL
+  `).bind(bytesToHex(digest)).first();
+  if (!row) return null;
+  await env.DB.prepare(`
+    UPDATE team_access_tokens SET last_used_at = ? WHERE token_hash = ?
+  `).bind(now(), bytesToHex(digest)).run();
+  return {
+    type: "user",
+    id: row.id,
+    name: row.display_name,
+    avatarUrl: null,
+    username: row.display_name,
+    role: row.role,
+    authentication: "bearer",
+  };
+}
+
 async function authenticate(request, env) {
+  const authorization = request.headers.get("authorization");
+  const bearer = await authenticateBearer(authorization, env);
+  if (bearer) return bearer;
   if (typeof env.TASKBOARD_SHARED_SECRET !== "string" || env.TASKBOARD_SHARED_SECRET === "") {
     throw new ApiError(
       500,
@@ -342,7 +375,7 @@ async function authenticate(request, env) {
       "TASKBOARD_SHARED_SECRET is not configured",
     );
   }
-  const credentials = decodeBasicCredentials(request.headers.get("authorization"));
+  const credentials = decodeBasicCredentials(authorization);
   if (!credentials) return null;
   const encoder = new TextEncoder();
   const [providedSecret, configuredSecret] = await Promise.all([
@@ -574,6 +607,8 @@ function taskActivityFromRow(row) {
   return {
     id: row.id,
     taskId: row.task_id,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
     actorType: row.actor_type,
     actorId: row.actor_id,
     actorName: row.actor_name,
@@ -679,6 +714,7 @@ function attachmentFromRow(row) {
     filename: row.filename,
     contentType: row.content_type,
     size: row.size,
+    version: row.version ?? 1,
     createdAt: row.created_at,
   };
 }
@@ -1328,7 +1364,7 @@ async function listTasks(env, filters) {
   )));
 }
 
-async function createTask(env, input, actor) {
+async function createTask(env, input, actor, explicitId) {
   const project = await env.DB.prepare(`
     SELECT
       projects.id,
@@ -1358,7 +1394,7 @@ async function createTask(env, input, actor) {
     `).bind(input.projectId, input.status).first();
     sortOrder = row.maximum + 1000;
   }
-  const id = uuid();
+  const id = explicitId ?? uuid();
   const timestamp = now();
   const assignee = resolveAssignee(input.assigneeTarget, actor);
   const results = await env.DB.batch([
@@ -2111,9 +2147,9 @@ async function listComments(env, taskId) {
   return Promise.all(rows.map((row) => hydrateComment(env, row)));
 }
 
-async function createComment(env, taskId, input, actor) {
+async function createComment(env, taskId, input, actor, explicitId) {
   const task = await requireTaskRow(env, taskId);
-  const id = uuid();
+  const id = explicitId ?? uuid();
   const timestamp = now();
   await env.DB.prepare(`
     INSERT INTO comments (
@@ -2328,8 +2364,440 @@ async function attachmentContent(env, id, request, download = false) {
   });
 }
 
+function parseSyncCursor(url) {
+  const unknown = [...url.searchParams.keys()].filter((key) => key !== "cursor");
+  if (unknown.length > 0 || url.searchParams.getAll("cursor").length !== 1) {
+    throw new ApiError(400, "INVALID_SYNC_CURSOR", "Exactly one cursor query parameter is required");
+  }
+  const cursor = url.searchParams.get("cursor");
+  if (!/^\d+$/.test(cursor ?? "") || !Number.isSafeInteger(Number(cursor))) {
+    throw new ApiError(400, "INVALID_SYNC_CURSOR", "Sync cursor must be a non-negative integer");
+  }
+  return Number(cursor);
+}
+
+function parseSyncPush(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["deviceId", "clientVersion", "operations"]));
+  const deviceId = stringField(body.deviceId, "deviceId", { required: true, maxLength: 256 });
+  stringField(body.clientVersion, "clientVersion", { required: true, maxLength: 64 });
+  if (!Array.isArray(body.operations) || body.operations.length > 100) {
+    throw new ApiError(400, "INVALID_SYNC_OPERATIONS", "operations must contain at most 100 entries");
+  }
+  return {
+    deviceId,
+    operations: body.operations.map((operation, index) => {
+      assertPlainObject(operation);
+      assertAllowedKeys(operation, new Set([
+        "id", "idempotencyKey", "entityType", "entityId", "operationType",
+        "baseVersion", "baseSnapshot", "change",
+      ]));
+      const supported = (
+        (operation.entityType === "task" && ["create", "update"].includes(operation.operationType))
+        || (["comment", "attachment"].includes(operation.entityType)
+          && ["create", "update", "delete"].includes(operation.operationType))
+      );
+      if (!supported) {
+        throw new ApiError(400, "UNSUPPORTED_SYNC_OPERATION", `operations[${index}] is not supported`);
+      }
+      assertPlainObject(operation.change);
+      return {
+        id: stringField(operation.id, `operations[${index}].id`, { required: true, maxLength: 256 }),
+        idempotencyKey: stringField(operation.idempotencyKey, `operations[${index}].idempotencyKey`, { required: true, maxLength: 512 }),
+        entityType: operation.entityType,
+        entityId: stringField(operation.entityId, `operations[${index}].entityId`, { required: true, maxLength: 256 }),
+        operationType: operation.operationType,
+        baseVersion: parseVersion(operation.baseVersion, { allowZero: operation.operationType === "create" }),
+        baseSnapshot: operation.baseSnapshot ?? null,
+        change: operation.change,
+      };
+    }),
+  };
+}
+
+async function currentTeamCursor(env) {
+  return Number(await env.DB.prepare("SELECT sequence FROM team_change_sequence WHERE singleton = 1").first("sequence"));
+}
+
+async function recordTeamChange(env, { entityType, entityId, revision, operationType, snapshot, actor }) {
+  const timestamp = now();
+  const serialized = JSON.stringify(snapshot);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE team_change_sequence SET sequence = sequence + 1 WHERE singleton = 1"),
+    env.DB.prepare(`
+      INSERT INTO team_entity_revisions (entity_type, entity_id, revision, snapshot, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+        revision = excluded.revision, snapshot = excluded.snapshot, updated_at = excluded.updated_at
+    `).bind(entityType, entityId, revision, serialized, timestamp),
+    env.DB.prepare(`
+      INSERT INTO team_changes (
+        sequence, entity_type, entity_id, revision, operation_type, snapshot, actor_id, created_at
+      ) SELECT sequence, ?, ?, ?, ?, ?, ?, ? FROM team_change_sequence WHERE singleton = 1
+    `).bind(entityType, entityId, revision, operationType, serialized, actor.id, timestamp),
+  ]);
+  return currentTeamCursor(env);
+}
+
+async function saveOperationReceipt(env, actor, operation, result) {
+  await env.DB.prepare(`
+    INSERT INTO team_operation_receipts (user_id, idempotency_key, result_json, created_at)
+    VALUES (?, ?, ?, ?)
+  `).bind(actor.id, operation.idempotencyKey, JSON.stringify(result), now()).run();
+}
+
+async function createEntityBranch(env, actor, deviceId, operation, taskId, currentSnapshot) {
+  const id = uuid();
+  const timestamp = now();
+  const branchSnapshot = { ...(operation.baseSnapshot ?? {}), ...operation.change };
+  await env.DB.batch([
+    env.DB.prepare(`
+      INSERT INTO task_branches (
+        id, task_id, entity_type, entity_id, operation_id, base_revision, current_main_revision,
+        proposed_revision, base_snapshot, main_snapshot, branch_snapshot, change_json,
+        author_id, device_id, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+    `).bind(
+      id, taskId, operation.entityType, operation.entityId, operation.id,
+      operation.baseVersion, currentSnapshot.version,
+      operation.baseVersion + 1, JSON.stringify(operation.baseSnapshot ?? {}),
+      JSON.stringify(currentSnapshot), JSON.stringify(branchSnapshot), JSON.stringify(operation.change),
+      actor.id, deviceId, timestamp, timestamp,
+    ),
+    env.DB.prepare(`
+      INSERT INTO task_branch_revisions (id, branch_id, revision, snapshot, actor_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(uuid(), id, operation.baseVersion + 1, JSON.stringify(branchSnapshot), actor.id, timestamp),
+  ]);
+  return id;
+}
+
+function decodeBase64(value) {
+  if (typeof value !== "string" || value.length > Math.ceil(ATTACHMENT_BODY_LIMIT * 4 / 3) + 4) {
+    throw new ApiError(400, "INVALID_ATTACHMENT_CONTENT", "Attachment content is invalid");
+  }
+  try {
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    if (bytes.byteLength > ATTACHMENT_BODY_LIMIT) {
+      throw new ApiError(413, "BODY_TOO_LARGE", "Attachment cannot exceed 25 MiB");
+    }
+    return bytes;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(400, "INVALID_ATTACHMENT_CONTENT", "Attachment content is not valid base64");
+  }
+}
+
+async function createSyncAttachment(env, operation) {
+  const change = operation.change;
+  const task = await requireTaskRow(env, stringField(change.taskId, "change.taskId", { required: true, maxLength: 256 }));
+  const commentId = change.commentId == null
+    ? null
+    : stringField(change.commentId, "change.commentId", { required: true, maxLength: 256 });
+  if (commentId) {
+    const comment = await requireCommentRow(env, commentId);
+    if (comment.task_id !== task.id) throw new ApiError(400, "INVALID_ATTACHMENT_OWNER", "Comment and task do not match");
+  }
+  const filename = stringField(change.filename, "change.filename", { required: true, maxLength: 255 });
+  const contentType = stringField(change.contentType, "change.contentType", { required: true, maxLength: 255 });
+  const bytes = decodeBase64(change.contentBase64);
+  await env.ATTACHMENTS.put(operation.entityId, bytes, { httpMetadata: { contentType } });
+  try {
+    await env.DB.prepare(`
+      INSERT INTO attachments (id, task_id, comment_id, filename, content_type, size, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(operation.entityId, task.id, commentId, filename, contentType, bytes.byteLength, now()).run();
+  } catch (error) {
+    await env.ATTACHMENTS.delete(operation.entityId);
+    throw error;
+  }
+  return attachmentFromRow(await env.DB.prepare("SELECT * FROM attachments WHERE id = ?").bind(operation.entityId).first());
+}
+
+async function processSyncOperation(env, actor, deviceId, operation) {
+  if (operation.entityType === "task") {
+    if (operation.operationType === "create") {
+      if (operation.baseVersion !== 0) throw new ApiError(400, "INVALID_BASE_VERSION", "Task creation must use base version 0");
+      const created = await createTask(env, parseTaskCreate(operation.change), actor, operation.entityId);
+      await recordTeamChange(env, {
+        entityType: "task", entityId: created.id, revision: created.version,
+        operationType: "create", snapshot: created, actor,
+      });
+      return { operationId: operation.id, status: "accepted", entityId: created.id, version: created.version };
+    }
+    const current = await getTask(env, operation.entityId);
+    if (!current) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${operation.entityId}' does not exist`);
+    if (current.version !== operation.baseVersion) {
+      const branchId = await createEntityBranch(env, actor, deviceId, operation, current.id, current);
+      return { operationId: operation.id, status: "branch", branchId, entityId: current.id, mainVersion: current.version };
+    }
+    const updated = await updateTask(
+      env,
+      operation.entityId,
+      parseTaskPatch({ version: operation.baseVersion, ...operation.change }),
+      actor,
+    );
+    await recordTeamChange(env, {
+      entityType: "task", entityId: updated.id, revision: updated.version,
+      operationType: "update", snapshot: updated, actor,
+    });
+    return { operationId: operation.id, status: "accepted", entityId: updated.id, version: updated.version };
+  }
+
+  if (operation.entityType === "comment") {
+    if (operation.operationType === "create") {
+      if (operation.baseVersion !== 0) throw new ApiError(400, "INVALID_BASE_VERSION", "Comment creation must use base version 0");
+      const created = await createComment(
+        env,
+        stringField(operation.change.taskId, "change.taskId", { required: true, maxLength: 256 }),
+        parseCommentCreate({
+          body: operation.change.body,
+          ...(operation.change.threadId === undefined ? {} : { threadId: operation.change.threadId }),
+        }),
+        actor,
+        operation.entityId,
+      );
+      await recordTeamChange(env, {
+        entityType: "comment", entityId: created.id, revision: created.version,
+        operationType: "create", snapshot: created, actor,
+      });
+      return { operationId: operation.id, status: "accepted", entityId: created.id, version: created.version };
+    }
+    const row = await requireCommentRow(env, operation.entityId);
+    const current = await hydrateComment(env, row);
+    if (current.version !== operation.baseVersion) {
+      const branchId = await createEntityBranch(env, actor, deviceId, operation, current.taskId, current);
+      return { operationId: operation.id, status: "branch", branchId, entityId: current.id, mainVersion: current.version };
+    }
+    if (operation.operationType === "delete") {
+      await deleteComment(env, current.id, current.version);
+      await recordTeamChange(env, {
+        entityType: "comment", entityId: current.id, revision: current.version + 1,
+        operationType: "delete", snapshot: null, actor,
+      });
+      return { operationId: operation.id, status: "accepted", entityId: current.id, version: current.version + 1 };
+    }
+    const updated = await updateComment(
+      env,
+      current.id,
+      parseCommentPatch({ version: current.version, ...operation.change }),
+    );
+    await recordTeamChange(env, {
+      entityType: "comment", entityId: updated.id, revision: updated.version,
+      operationType: "update", snapshot: updated, actor,
+    });
+    return { operationId: operation.id, status: "accepted", entityId: updated.id, version: updated.version };
+  }
+
+  if (operation.operationType !== "create") {
+    const current = attachmentFromRow(await env.DB.prepare("SELECT * FROM attachments WHERE id = ?").bind(operation.entityId).first());
+    const branchId = await createEntityBranch(env, actor, deviceId, operation, current.taskId, current);
+    return { operationId: operation.id, status: "branch", branchId, entityId: current.id, mainVersion: current.version };
+  }
+  if (operation.baseVersion !== 0) throw new ApiError(400, "INVALID_BASE_VERSION", "Attachment creation must use base version 0");
+  const created = await createSyncAttachment(env, operation);
+  await recordTeamChange(env, {
+    entityType: "attachment", entityId: created.id, revision: created.version,
+    operationType: "create", snapshot: created, actor,
+  });
+  return { operationId: operation.id, status: "accepted", entityId: created.id, version: created.version };
+}
+
+async function pushSyncOperations(env, actor, input) {
+  const results = [];
+  for (const operation of input.operations) {
+    const receipt = await env.DB.prepare(`
+      SELECT result_json FROM team_operation_receipts WHERE user_id = ? AND idempotency_key = ?
+    `).bind(actor.id, operation.idempotencyKey).first();
+    if (receipt) {
+      results.push(JSON.parse(receipt.result_json));
+      continue;
+    }
+    const result = await processSyncOperation(env, actor, input.deviceId, operation);
+    await saveOperationReceipt(env, actor, operation, result);
+    results.push(result);
+  }
+  return { results, cursor: String(await currentTeamCursor(env)) };
+}
+
+function branchFromRow(row) {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    operationId: row.operation_id,
+    baseRevision: row.base_revision,
+    currentMainRevision: row.current_main_revision,
+    proposedRevision: row.proposed_revision,
+    baseSnapshot: JSON.parse(row.base_snapshot),
+    mainSnapshot: JSON.parse(row.main_snapshot),
+    branchSnapshot: JSON.parse(row.branch_snapshot),
+    authorId: row.author_id,
+    deviceId: row.device_id,
+    state: row.state,
+    resolutionSnapshot: row.resolution_snapshot ? JSON.parse(row.resolution_snapshot) : null,
+    resolvedBy: row.resolved_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function requireBranch(env, id) {
+  const row = await env.DB.prepare("SELECT * FROM task_branches WHERE id = ?").bind(id).first();
+  if (!row) throw new ApiError(404, "TASK_BRANCH_NOT_FOUND", `Task branch '${id}' does not exist`);
+  return row;
+}
+
+async function assertBranchResolutionAllowed(env, actor, taskId) {
+  const task = await requireTaskRow(env, taskId);
+  if (actor.role === "admin" || task.creator_id === actor.id || task.assignee_id === actor.id) return;
+  throw new ApiError(403, "BRANCH_RESOLUTION_FORBIDDEN", "Only the task assignee, creator, or project administrator can resolve this branch");
+}
+
+function taskSnapshotPatch(snapshot) {
+  assertPlainObject(snapshot);
+  return Object.fromEntries([
+    "projectId", "title", "description", "status", "priority", "labels", "workflowId",
+    "developmentContext", "startDate", "dueDate", "recurrence",
+  ].flatMap((key) => Object.hasOwn(snapshot, key) ? [[key, snapshot[key]]] : []));
+}
+
+async function resolveTaskBranch(env, actor, branchId, mode, snapshot) {
+  const branch = await requireBranch(env, branchId);
+  if (branch.state !== "open") throw new ApiError(409, "TASK_BRANCH_RESOLVED", "Task branch has already been resolved");
+  await assertBranchResolutionAllowed(env, actor, branch.task_id);
+  const desired = mode === "promoted" ? JSON.parse(branch.branch_snapshot) : snapshot;
+  let entity;
+  if (branch.entity_type === "task") {
+    const current = await getTask(env, branch.task_id);
+    entity = await updateTask(
+      env,
+      current.id,
+      parseTaskPatch({ version: current.version, ...taskSnapshotPatch(desired) }),
+      actor,
+    );
+  } else if (branch.entity_type === "comment") {
+    const current = await requireCommentRow(env, branch.entity_id);
+    entity = await updateComment(
+      env,
+      current.id,
+      parseCommentPatch({ version: current.version, body: desired.body }),
+    );
+  } else {
+    throw new ApiError(409, "ATTACHMENT_BRANCH_REVIEW_REQUIRED", "Attachment branch resolution requires a replacement upload");
+  }
+  const timestamp = now();
+  await env.DB.prepare(`
+    UPDATE task_branches
+    SET state = ?, resolution_snapshot = ?, resolved_by = ?, updated_at = ?
+    WHERE id = ? AND state = 'open'
+  `).bind(mode, JSON.stringify(entity), actor.id, timestamp, branchId).run();
+  await recordTeamChange(env, {
+    entityType: branch.entity_type, entityId: entity.id, revision: entity.version,
+    operationType: mode, snapshot: entity, actor,
+  });
+  return {
+    branch: branchFromRow(await requireBranch(env, branchId)),
+    ...(branch.entity_type === "task" ? { task: entity } : { comment: entity }),
+  };
+}
+
 async function routeApi(request, env, actor, url) {
   const { pathname } = url;
+
+  if (pathname === "/api/team/session") {
+    if (request.method !== "GET") methodNotAllowed(["GET"]);
+    if (actor.authentication !== "bearer") {
+      throw new ApiError(401, "BEARER_TOKEN_REQUIRED", "A Team Server access token is required");
+    }
+    return json(200, {
+      user: { id: actor.id, name: actor.name },
+      role: actor.role,
+      serverVersion: "1.0.0",
+      minimumClientVersion: "0.3.0",
+    });
+  }
+
+  if (pathname === "/api/updates/latest.json") {
+    if (request.method !== "GET") methodNotAllowed(["GET"]);
+    if (actor.authentication !== "bearer") {
+      throw new ApiError(401, "BEARER_TOKEN_REQUIRED", "A Team Server access token is required");
+    }
+    const artifact = await env.DB.prepare(`
+      SELECT version, manifest_json, signature, published_at
+      FROM team_update_artifacts WHERE active = 1
+    `).first();
+    if (!artifact) throw new ApiError(404, "UPDATE_MANIFEST_NOT_FOUND", "No active update manifest is available");
+    return json(200, {
+      version: artifact.version,
+      manifest: JSON.parse(artifact.manifest_json),
+      signature: artifact.signature,
+      publishedAt: artifact.published_at,
+    });
+  }
+
+  if (pathname === "/api/sync/pull") {
+    if (request.method !== "GET") methodNotAllowed(["GET"]);
+    if (actor.authentication !== "bearer") {
+      throw new ApiError(401, "BEARER_TOKEN_REQUIRED", "A Team Server access token is required");
+    }
+    const cursor = parseSyncCursor(url);
+    const changes = await all(env.DB.prepare(`
+      SELECT * FROM team_changes WHERE sequence > ? ORDER BY sequence LIMIT 1000
+    `).bind(cursor));
+    const nextCursor = changes.length > 0 ? changes.at(-1).sequence : await currentTeamCursor(env);
+    return json(200, {
+      changes: changes.map((change) => ({
+        sequence: String(change.sequence),
+        entityType: change.entity_type,
+        entityId: change.entity_id,
+        revision: change.revision,
+        operationType: change.operation_type,
+        snapshot: change.snapshot === null ? null : JSON.parse(change.snapshot),
+        actorId: change.actor_id,
+        createdAt: change.created_at,
+      })),
+      cursor: String(nextCursor),
+    });
+  }
+
+  if (pathname === "/api/sync/push") {
+    if (request.method !== "POST") methodNotAllowed(["POST"]);
+    if (actor.authentication !== "bearer") {
+      throw new ApiError(401, "BEARER_TOKEN_REQUIRED", "A Team Server access token is required");
+    }
+    return json(200, await pushSyncOperations(env, actor, parseSyncPush(await readJson(request))));
+  }
+
+  const taskBranchesMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/branches$/);
+  if (taskBranchesMatch) {
+    if (request.method !== "GET") methodNotAllowed(["GET"]);
+    const taskId = decodePathPart(taskBranchesMatch[1], "Task id");
+    const rows = await all(env.DB.prepare(`
+      SELECT * FROM task_branches WHERE task_id = ? ORDER BY created_at, id
+    `).bind(taskId));
+    return json(200, { branches: rows.map(branchFromRow) });
+  }
+
+  const branchMatch = pathname.match(/^\/api\/task-branches\/([^/]+)(?:\/(promote|merge))?$/);
+  if (branchMatch) {
+    const branchId = decodePathPart(branchMatch[1], "Task branch id");
+    const action = branchMatch[2];
+    if (!action && request.method === "GET") {
+      return json(200, { branch: branchFromRow(await requireBranch(env, branchId)) });
+    }
+    if (action === "promote" && request.method === "POST") {
+      await readJson(request);
+      return json(200, await resolveTaskBranch(env, actor, branchId, "promoted"));
+    }
+    if (action === "merge" && request.method === "POST") {
+      const body = await readJson(request);
+      assertPlainObject(body);
+      assertAllowedKeys(body, new Set(["snapshot"]));
+      return json(200, await resolveTaskBranch(env, actor, branchId, "merged", body.snapshot));
+    }
+    methodNotAllowed(action ? ["POST"] : ["GET"]);
+  }
 
   if (pathname === "/api/meta") {
     if (request.method !== "GET") methodNotAllowed(["GET"]);
