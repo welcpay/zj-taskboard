@@ -914,26 +914,7 @@ function resolveApiUrl(baseUrl, pathname) {
 
 async function resolveTaskboardBaseUrl(env, overrides) {
   if (env.CODEX_TASKBOARD_URL !== undefined) return env.CODEX_TASKBOARD_URL;
-  const descriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
-  if (!descriptorPath) return DEFAULT_API_URL;
-  let descriptor;
-  try {
-    const read = overrides.readFile ?? readFile;
-    descriptor = JSON.parse(await read(descriptorPath, "utf8"));
-  } catch (error) {
-    throw new TaskctlError("Cannot read the active Taskboard launcher endpoint", {
-      code: "SERVICE_UNAVAILABLE",
-      exitCode: 3,
-      details: error instanceof Error ? error.message : String(error),
-    });
-  }
-  if (descriptor?.version !== 1 || typeof descriptor.url !== "string") {
-    throw new TaskctlError("The active Taskboard launcher endpoint is invalid", {
-      code: "INVALID_RESPONSE",
-      exitCode: 4,
-    });
-  }
-  return descriptor.url;
+  return DEFAULT_API_URL;
 }
 
 function resolveCompanionUrl(env) {

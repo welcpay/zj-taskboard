@@ -7,27 +7,21 @@ const runtimeSource = await readFile(
   new URL("../scripts/codex-injector-runtime.mjs", import.meta.url),
   "utf8",
 );
-const supervisorSource = await readFile(
-  new URL("../scripts/taskboard-supervisor.mjs", import.meta.url),
-  "utf8",
-);
 const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
 
-test("the resident injector authenticates its launcher-managed Taskboard service", () => {
-  assert.match(supervisorSource, /function createTaskboardSupervisor/);
-  assert.match(source, /CODEX_TASKBOARD_INSTANCE_TOKEN/);
-  assert.match(source, /createHmac\("sha256"/);
-  assert.match(source, /x-codex-taskboard-challenge/);
-  assert.match(source, /proof/);
-  assert.match(source, /taskboardInstanceSecret/);
+test("the resident injector connects to the independent fixed-port daemon", () => {
+  assert.match(source, /CODEX_TASKBOARD_URL/);
+  assert.match(source, /http:\/\/127\.0\.0\.1:47823/);
+  assert.match(source, /function ensureTaskboardService/);
+  assert.doesNotMatch(source, /function startTaskboard/);
+  assert.doesNotMatch(source, /createTaskboardSupervisor/);
+  assert.doesNotMatch(source, /server", "index\.mjs/);
+  assert.doesNotMatch(source, /CODEX_TASKBOARD_LISTEN_FD/);
   assert.match(source, /Page\.setDocumentContent/);
   assert.match(runtimeSource, /request\.action === "load-frame"/);
-  assert.match(supervisorSource, /ensureInFlight/);
-  assert.match(supervisorSource, /await terminateManagedChild\(managedChild\)/);
-  assert.match(source, /await supervisor\.ensure\(\)/);
-  assert.match(source, /it will be restarted automatically/);
+  assert.match(source, /await ensureTaskboardService\(\)/);
   assert.match(source, /AbortSignal\.timeout\(1_500\)/);
   assert.match(source, /__CODEX_TASKBOARD_FRAME_CAPABILITY__/);
   assert.match(runtimeSource, /request\.frameCapability/);
@@ -130,8 +124,9 @@ test("a completed web build refreshes an already-open Codex iframe", () => {
   assert.match(source, /await restartResidentInjectorForRefresh\(port\)/);
 });
 
-test("the injected iframe follows the configured local service port", () => {
-  assert.match(source, /const taskboardBaseUrl = `\$\{taskboardOrigin\}\/\$\{encodeURIComponent\(taskboardInstanceToken\)\}`/);
+test("the injected iframe stays on the fixed local daemon endpoint", () => {
+  assert.match(source, /const taskboardOrigin = "http:\/\/127\.0\.0\.1:47823"/);
+  assert.match(source, /const taskboardBaseUrl = taskboardOrigin/);
   assert.match(source, /const taskboardPageUrl = `\$\{taskboardBaseUrl\}\/\?host=codex`/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__ = \$\{JSON\.stringify\(taskboardPageUrl\)\}/);
 });

@@ -1678,7 +1678,7 @@ export function createTaskboardServer(options = {}) {
       assertTrustedNetworkRequest(request, Boolean(resolved.instanceToken));
       const url = new URL(request.url, "http://127.0.0.1");
       const pathname = url.pathname;
-      if (resolved.instanceToken && pathname === "/api/local/embed-token") {
+      if (pathname === "/api/local/embed-token") {
         assertLoopbackRequest(request);
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
         if (request.headers.origin) {

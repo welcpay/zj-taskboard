@@ -76,6 +76,28 @@ test("CODEX_TASKBOARD_URL overrides the service origin", async () => {
   assert.equal(requestedUrl.toString(), "https://tasks.example.test/api/projects");
 });
 
+test("ordinary taskctl requests ignore legacy launcher runtime descriptors", async () => {
+  const calls = [];
+  const result = await run(
+    ["project", "list", "--json"],
+    async (url) => {
+      calls.push(String(url));
+      return response({ projects: [] });
+    },
+    {
+      env: {
+        CODEX_THREAD_ID: "thread-current",
+        CODEX_TASKBOARD_RUNTIME_FILE: "/tmp/stale-launcher-runtime.json",
+      },
+      readFile: async () => {
+        throw new Error("legacy runtime descriptor must not be read");
+      },
+    },
+  );
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(calls, ["http://127.0.0.1:47823/api/projects"]);
+});
+
 test("project create sends id, name, and an absolute workspace path", async () => {
   let requestBody;
   const result = await run(

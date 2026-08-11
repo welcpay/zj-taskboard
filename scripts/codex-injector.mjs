@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { resolvePort } from "../server/app.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
 import {
@@ -23,7 +22,6 @@ import {
   shouldEndManagedSession,
 } from "./codex-injector-runtime.mjs";
 import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
-import { createTaskboardSupervisor } from "./taskboard-supervisor.mjs";
 import {
   CdpPipeBrowser,
   validatedLoopbackCdpWebSocketUrl,
@@ -42,36 +40,13 @@ const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js"
 const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
   ? path.resolve(process.env.CODEX_TASKBOARD_DATA_DIR)
   : path.join(projectRoot, ".data");
-const taskboardRuntimeFile = process.env.CODEX_TASKBOARD_RUNTIME_FILE
-  ? path.resolve(process.env.CODEX_TASKBOARD_RUNTIME_FILE)
-  : null;
-const taskboardListenFd = process.env.CODEX_TASKBOARD_LISTEN_FD === undefined
-  ? null
-  : Number(process.env.CODEX_TASKBOARD_LISTEN_FD);
-if (taskboardListenFd !== null && (
-  !Number.isInteger(taskboardListenFd)
-  || taskboardListenFd < 3
-  || taskboardListenFd > 255
-)) {
-  throw new Error("CODEX_TASKBOARD_LISTEN_FD must be an inherited file descriptor");
-}
 const automationPoliciesPath = path.join(
   taskboardDataDirectory,
   "codex-automation-policies.json",
 );
-const taskboardInstanceToken = (
-  process.env.CODEX_TASKBOARD_INSTANCE_TOKEN?.trim() || randomUUID()
-);
-process.env.CODEX_TASKBOARD_INSTANCE_TOKEN = taskboardInstanceToken;
-const taskboardInstanceSecret = (
-  process.env.CODEX_TASKBOARD_INSTANCE_SECRET?.trim() || randomBytes(32).toString("hex")
-);
-process.env.CODEX_TASKBOARD_INSTANCE_SECRET = taskboardInstanceSecret;
-const taskboardVersion = process.env.CODEX_TASKBOARD_VERSION?.trim() || "development";
-process.env.CODEX_TASKBOARD_VERSION = taskboardVersion;
-const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
+const taskboardOrigin = "http://127.0.0.1:47823";
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
-const taskboardBaseUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}`;
+const taskboardBaseUrl = taskboardOrigin;
 const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex`;
 const taskboardEmbedToken = randomUUID();
 const taskboardEmbedTokenHeader = "x-codex-taskboard-embed-token";
@@ -165,21 +140,15 @@ async function isReachable(url) {
 }
 
 async function isTaskboardReachable() {
-  const challenge = randomBytes(32).toString("hex");
   try {
     const response = await fetch(taskboardHealthUrl, {
-      headers: { "x-codex-taskboard-challenge": challenge },
       signal: AbortSignal.timeout(1_500),
     });
     if (!response.ok) return false;
     const body = await response.json();
-    const proof = createHmac("sha256", taskboardInstanceSecret)
-      .update(challenge)
-      .digest("hex");
     return body?.status === "ok"
       && body.product === "codex-taskboard"
-      && body.version === taskboardVersion
-      && body.proof === proof;
+      && typeof body.daemonVersion === "string";
   } catch {
     return false;
   }
@@ -194,53 +163,9 @@ async function waitUntilReachable(url, timeoutMs) {
   throw new Error(`Timed out waiting for ${url}`);
 }
 
-async function waitUntilTaskboardReachable(timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await isTaskboardReachable()) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(`Timed out waiting for authenticated ${taskboardHealthUrl}`);
-}
-
-function startTaskboard({ detached }) {
-  const stdio = taskboardListenFd === null
-    ? (detached ? "ignore" : "inherit")
-    : Array.from(
-      { length: taskboardListenFd + 1 },
-      (_, fd) => (fd === taskboardListenFd ? "inherit" : (fd < 3 && !detached ? "inherit" : "ignore")),
-    );
-  return spawn(process.execPath, [path.join(projectRoot, "server", "index.mjs")], {
-    cwd: projectRoot,
-    detached,
-    stdio,
-  });
-}
-
-async function publishTaskboardRuntime() {
-  if (!taskboardRuntimeFile) return;
-  const temporaryPath = `${taskboardRuntimeFile}.${process.pid}.tmp`;
-  await mkdir(path.dirname(taskboardRuntimeFile), { recursive: true });
-  await writeFile(
-    temporaryPath,
-    `${JSON.stringify({ version: 1, pid: process.pid, url: taskboardBaseUrl })}\n`,
-    { mode: 0o600 },
-  );
-  await chmod(temporaryPath, 0o600);
-  await rename(temporaryPath, taskboardRuntimeFile);
-  await chmod(taskboardRuntimeFile, 0o600);
-}
-
-async function removeTaskboardRuntime() {
-  if (!taskboardRuntimeFile) return;
-  try {
-    const descriptor = JSON.parse(await readFile(taskboardRuntimeFile, "utf8"));
-    if (descriptor.pid === process.pid && descriptor.url === taskboardBaseUrl) {
-      await unlink(taskboardRuntimeFile);
-    }
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
+async function ensureTaskboardService() {
+  if (await isTaskboardReachable()) return { managed: true, restarted: false };
+  throw new Error(`Codex Taskboard daemon is unavailable at ${taskboardHealthUrl}`);
 }
 
 async function importCodexBrowserProfile() {
@@ -705,20 +630,11 @@ function findFrameByName(frameTree, frameName) {
 }
 
 async function verifiedTaskboardDocument(frameCapability) {
-  const challenge = randomBytes(32).toString("hex");
   const response = await fetch(taskboardPageUrl, {
     cache: "no-store",
-    headers: {
-      origin: "app://-",
-      "x-codex-taskboard-challenge": challenge,
-    },
+    headers: { origin: "app://-" },
   });
   if (!response.ok) throw new Error(`Taskboard HTTP ${response.status}`);
-  const proof = response.headers.get("x-codex-taskboard-proof") ?? "";
-  const expectedProof = createHmac("sha256", taskboardInstanceSecret)
-    .update(challenge)
-    .digest("hex");
-  if (proof !== expectedProof) throw new Error("Taskboard service identity check failed");
   const html = await response.text();
   const head = "<head>";
   if (!html.includes(head)) throw new Error("Taskboard document has no head element");
@@ -1225,7 +1141,7 @@ async function sendHostResponse(cdp, executionContextId, response) {
   });
 }
 
-function installTaskboardHostBinding(cdp, supervisor, startupToken) {
+function installTaskboardHostBinding(cdp, startupToken) {
   let activeContextId = null;
   let installInFlight = null;
 
@@ -1235,7 +1151,7 @@ function installTaskboardHostBinding(cdp, supervisor, startupToken) {
     await handleHostBindingPayload(params, {
       isAuthorizedContext: (executionContextId) => executionContextId === activeContextId,
       parseAutomationRequest: parseTaskboardAutomationHostRequest,
-      ensure: () => supervisor.ensure({ force: true }),
+      ensure: ensureTaskboardService,
       loadFrame: (request) => loadTaskboardFrameViaCdp(
         cdp,
         request.frameName,
@@ -1401,14 +1317,13 @@ async function injectTarget(
   shouldOpen,
   screenshotPath,
   keepAlive,
-  supervisor,
   attachExisting,
   startupToken,
 ) {
   const cdp = await runtime.connect(target);
   let retained = false;
   const hostBridge = keepAlive
-    ? installTaskboardHostBinding(cdp, supervisor, startupToken)
+    ? installTaskboardHostBinding(cdp, startupToken)
     : null;
   cdp.hostBridge = hostBridge;
   try {
@@ -1513,7 +1428,6 @@ async function injectAll(
   screenshotPath,
   injectedTargets,
   keepAlive,
-  supervisor,
   attachExisting,
   startupToken,
 ) {
@@ -1544,7 +1458,6 @@ async function injectAll(
       shouldOpen && firstTarget,
       firstTarget ? screenshotPath : null,
       keepAlive,
-      supervisor,
       attachExisting,
       startupToken,
     );
@@ -1575,20 +1488,11 @@ ${runtimeSource}`,
 }
 
 async function verifiedTaskboardHtml() {
-  const challenge = randomBytes(32).toString("hex");
   const response = await fetch(taskboardPageUrl, {
     cache: "no-store",
-    headers: {
-      origin: "app://-",
-      "x-codex-taskboard-challenge": challenge,
-    },
+    headers: { origin: "app://-" },
   });
   if (!response.ok) throw new Error(`Taskboard HTTP ${response.status}`);
-  const proof = response.headers.get("x-codex-taskboard-proof") ?? "";
-  const expectedProof = createHmac("sha256", taskboardInstanceSecret)
-    .update(challenge)
-    .digest("hex");
-  if (proof !== expectedProof) throw new Error("Taskboard service identity check failed");
   return response.text();
 }
 
@@ -1602,7 +1506,7 @@ async function registerTaskboardEmbedToken() {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  options.startupToken ??= taskboardInstanceToken;
+  options.startupToken ??= randomUUID();
   process.env.CODEX_EXECUTABLE = resolveCodexExecutable({ appPath: options.appPath });
   const cdpVersionUrl = `http://127.0.0.1:${options.port}/json/version`;
 
@@ -1659,20 +1563,6 @@ async function main() {
     stopping = true;
     wakeStop();
   };
-  const detached = !options.watch;
-  const supervisor = createTaskboardSupervisor({
-    detached,
-    isReachable: isTaskboardReachable,
-    waitUntilReachable: waitUntilTaskboardReachable,
-    start: () => startTaskboard({ detached }),
-    onProcessError: (error) => {
-      console.error(`Taskboard process error: ${error.message}`);
-    },
-    onUnexpectedExit: (code, signal) => {
-      console.error(`Taskboard exited (${signal || code}); it will be restarted automatically.`);
-    },
-  });
-
   let cleanupPromise = null;
   const cleanup = () => {
     if (cleanupPromise) return cleanupPromise;
@@ -1707,8 +1597,6 @@ async function main() {
           ]);
         }
       }
-      await supervisor.stop();
-      await removeTaskboardRuntime();
     })();
     return cleanupPromise;
   };
@@ -1725,8 +1613,7 @@ async function main() {
       }
     }
 
-    await supervisor.ensure({ force: true });
-    await publishTaskboardRuntime();
+    await ensureTaskboardService();
     if (options.launch) await importCodexBrowserProfile();
 
     if (options.cdpPipe) {
@@ -1752,7 +1639,6 @@ async function main() {
         options.screenshot,
         injectedTargets,
         options.watch,
-        supervisor,
         options.attachExisting,
         options.startupToken,
       );
@@ -1780,8 +1666,7 @@ async function main() {
       ]);
       if (stopping) break;
       try {
-        const service = await supervisor.ensure();
-        if (service.restarted) await publishTaskboardRuntime();
+        await ensureTaskboardService();
       } catch (error) {
         console.error(`Waiting for Taskboard service: ${error.message}`);
       }
@@ -1800,7 +1685,6 @@ async function main() {
           null,
           injectedTargets,
           true,
-          supervisor,
           options.attachExisting,
           options.startupToken,
         );
