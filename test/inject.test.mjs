@@ -129,6 +129,33 @@ test("opening asks the resident launcher to ensure the service and rebuilds fail
   assert.match(source, /HOST_HEARTBEAT_MAX_AGE_MS/);
 });
 
+test("an open panel automatically recovers through a bounded single retry controller", () => {
+  assert.match(source, /const PANEL_RECOVERY_TIMEOUT_MS = 60_000/);
+  assert.match(source, /const PANEL_RECOVERY_DELAYS_MS = \[500, 1_000, 2_000, 4_000, 5_000\]/);
+  assert.match(source, /let panelRecoveryTimer = null/);
+  assert.match(source, /let panelRecoveryStartedAt = 0/);
+  assert.match(source, /function cancelPanelRecovery\(\)/);
+  assert.match(source, /function schedulePanelRecovery\(generation, error\)/);
+  assert.match(source, /if \(panelRecoveryTimer !== null \|\| panelRecoveryInFlight\) return/);
+  assert.match(source, /Math\.min\(panelRecoveryAttempt, PANEL_RECOVERY_DELAYS_MS\.length - 1\)/);
+  assert.match(source, /Date\.now\(\) - panelRecoveryStartedAt >= PANEL_RECOVERY_TIMEOUT_MS/);
+  assert.match(source, /正在恢复任务面板/);
+});
+
+test("panel recovery replaces the failed frame and stale generations cannot win", () => {
+  assert.match(source, /async function recoverTaskboard\(generation\)/);
+  assert.match(source, /await requestHostEnsure\(taskboardUrl\)/);
+  assert.match(source, /const frameRequest = loadTaskboardFrame\(true\)/);
+  assert.match(source, /if \(!frameIsBlob\) await requestHostLoadFrame\(frameRequest\)/);
+  assert.match(source, /await waitForFrameReady\(\)/);
+  assert.match(source, /if \(!active \|\| destroyed \|\| generation !== openGeneration\) return/);
+  assert.match(source, /cancelPanelRecovery\(\);\s*showFrame\(\)/);
+  assert.match(source, /function closeTaskboard[\s\S]*?cancelPanelRecovery\(\)/);
+  assert.match(source, /function destroy[\s\S]*?cancelPanelRecovery\(\)/);
+  assert.match(source, /retry\.textContent = "立即重试"/);
+  assert.match(source, /retry\.addEventListener\("click", openTaskboard, \{ once: true \}\)/);
+});
+
 test("the injected iframe can be cache-busted without reloading the Codex shell", () => {
   assert.match(source, /const FRAME_REFRESH_PARAM = "__codex_taskboard_refresh"/);
   assert.match(source, /function reloadFrame\(\)/);

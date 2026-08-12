@@ -26,6 +26,8 @@
   const FRAME_READY_TIMEOUT_MS = 12_000;
   const HOST_REQUEST_TIMEOUT_MS = 12_000;
   const HOST_HEARTBEAT_MAX_AGE_MS = 8_000;
+  const PANEL_RECOVERY_TIMEOUT_MS = 60_000;
+  const PANEL_RECOVERY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 5_000];
   const MACOS_TITLEBAR_SAFE_LEFT = 80;
   const FRAME_REFRESH_PARAM = "__codex_taskboard_refresh";
   const PLUGIN_LABELS = ["插件", "plugins"];
@@ -76,6 +78,11 @@
   let observer = null;
   let reattachTimer = null;
   let hostContextTimer = null;
+  let panelRecoveryTimer = null;
+  let panelRecoveryStartedAt = 0;
+  let panelRecoveryAttempt = 0;
+  let panelRecoveryInFlight = false;
+  let panelRecoveryError = null;
   let lastFocusedElement = null;
   let hostContextSnapshot = null;
   let mutedNativeSelections = new Map();
@@ -1082,6 +1089,13 @@
     if (frame) frame.hidden = true;
   }
 
+  function showRecovering() {
+    if (!status) return;
+    status.replaceChildren(document.createTextNode("正在恢复任务面板…"));
+    status.hidden = false;
+    if (frame) frame.hidden = true;
+  }
+
   function showFrame() {
     if (status) status.hidden = true;
     if (frame) {
@@ -1097,7 +1111,7 @@
     text.textContent = message;
     const retry = document.createElement("button");
     retry.type = "button";
-    retry.textContent = "重新启动";
+    retry.textContent = "立即重试";
     retry.addEventListener("click", openTaskboard, { once: true });
     content.append(text, retry);
     status.replaceChildren(content);
@@ -1384,7 +1398,72 @@
     if (message.type === HOST_RESPONSE_MESSAGE) onHostResponse(message.response);
   }
 
+  function cancelPanelRecovery() {
+    if (panelRecoveryTimer !== null) window.clearTimeout(panelRecoveryTimer);
+    panelRecoveryTimer = null;
+    panelRecoveryStartedAt = 0;
+    panelRecoveryAttempt = 0;
+    panelRecoveryInFlight = false;
+    panelRecoveryError = null;
+  }
+
+  async function recoverTaskboard(generation) {
+    if (!active || destroyed || generation !== openGeneration) return;
+    panelRecoveryInFlight = true;
+    try {
+      const taskboardUrl = resolveTaskboardUrl();
+      await requestHostEnsure(taskboardUrl);
+      if (!active || destroyed || generation !== openGeneration) return;
+      const context = await captureHostContext();
+      if (!active || destroyed || generation !== openGeneration) return;
+      hostContextSnapshot = {
+        ...hostContextSnapshot,
+        ...context,
+        projects: context.projects.length > 0
+          ? context.projects
+          : hostContextSnapshot?.projects ?? [],
+      };
+      const frameRequest = loadTaskboardFrame(true);
+      if (!frameIsBlob) await requestHostLoadFrame(frameRequest);
+      await waitForFrameReady();
+      if (!active || destroyed || generation !== openGeneration) return;
+      cancelPanelRecovery();
+      showFrame();
+      postHostContext();
+    } catch (error) {
+      if (!active || destroyed || generation !== openGeneration) return;
+      panelRecoveryError = error;
+      panelRecoveryAttempt += 1;
+    } finally {
+      panelRecoveryInFlight = false;
+    }
+    if (!active || destroyed || generation !== openGeneration || frameReady) return;
+    schedulePanelRecovery(generation, panelRecoveryError);
+  }
+
+  function schedulePanelRecovery(generation, error) {
+    if (!active || destroyed || generation !== openGeneration) return;
+    if (panelRecoveryTimer !== null || panelRecoveryInFlight) return;
+    panelRecoveryError = error || panelRecoveryError;
+    if (panelRecoveryStartedAt === 0) panelRecoveryStartedAt = Date.now();
+    if (Date.now() - panelRecoveryStartedAt >= PANEL_RECOVERY_TIMEOUT_MS) {
+      const message = panelRecoveryError instanceof Error
+        ? panelRecoveryError.message
+        : "任务面板服务仍未就绪。";
+      cancelPanelRecovery();
+      showLoadError(message);
+      return;
+    }
+    showRecovering();
+    const delayIndex = Math.min(panelRecoveryAttempt, PANEL_RECOVERY_DELAYS_MS.length - 1);
+    panelRecoveryTimer = window.setTimeout(() => {
+      panelRecoveryTimer = null;
+      void recoverTaskboard(generation);
+    }, PANEL_RECOVERY_DELAYS_MS[delayIndex]);
+  }
+
   async function prepareTaskboard(generation) {
+    cancelPanelRecovery();
     const taskboardUrl = resolveTaskboardUrl();
     const canReuseFrame = Boolean(
       frameReady
@@ -1418,10 +1497,10 @@
       postHostContext();
     } catch (error) {
       if (!active || generation !== openGeneration) return;
-      const bindingAvailable = hasLiveHostBinding();
-      showLoadError(bindingAvailable
+      const recoveryError = hasLiveHostBinding()
         ? error.message
-        : "任务面板服务未就绪。请保持 Taskboard 启动器运行后重试。");
+        : "任务面板服务未就绪。请保持 Taskboard 启动器运行后重试。";
+      schedulePanelRecovery(generation, new Error(recoveryError));
     }
   }
 
@@ -1495,6 +1574,7 @@
     if (!active && page?.hidden !== false) return;
     openGeneration += 1;
     active = false;
+    cancelPanelRecovery();
     if (page) page.hidden = true;
     restoreNativeContent();
     restoreNativeBrowserPanel();
@@ -1583,6 +1663,7 @@
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    cancelPanelRecovery();
     if (reattachTimer !== null) window.clearTimeout(reattachTimer);
     reattachTimer = null;
     if (hostContextTimer !== null) window.clearInterval(hostContextTimer);
