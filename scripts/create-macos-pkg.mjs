@@ -61,6 +61,28 @@ exit 1
 `;
 }
 
+export function componentPropertyList() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+  <dict>
+    <key>BundleHasStrictIdentifier</key>
+    <true/>
+    <key>BundleIsRelocatable</key>
+    <false/>
+    <key>BundleIsVersionChecked</key>
+    <true/>
+    <key>BundleOverwriteAction</key>
+    <string>upgrade</string>
+    <key>RootRelativeBundlePath</key>
+    <string>Applications/${APP_NAME}</string>
+  </dict>
+</array>
+</plist>
+`;
+}
+
 export async function createMacosPkg({ appPath, outputPath, version, runCommand = run }) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Invalid PKG version: ${version}`);
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "codex-taskboard-pkg."));
@@ -68,15 +90,18 @@ export async function createMacosPkg({ appPath, outputPath, version, runCommand 
     const payloadRoot = path.join(temporaryRoot, "payload");
     const scriptsRoot = path.join(temporaryRoot, "scripts");
     const componentPath = path.join(temporaryRoot, "CodexTaskboard-component.pkg");
+    const componentPlistPath = path.join(temporaryRoot, "component.plist");
     await mkdir(path.join(payloadRoot, "Applications"), { recursive: true });
     await mkdir(scriptsRoot, { recursive: true });
     await cp(appPath, path.join(payloadRoot, "Applications", APP_NAME), { recursive: true });
     await writeFile(path.join(scriptsRoot, "preinstall"), preinstallScript(), { mode: 0o755 });
     await writeFile(path.join(scriptsRoot, "postinstall"), postinstallScript(version), { mode: 0o755 });
+    await writeFile(componentPlistPath, componentPropertyList());
     await mkdir(path.dirname(outputPath), { recursive: true });
     runCommand("/usr/bin/pkgbuild", [
       "--root", payloadRoot,
       "--scripts", scriptsRoot,
+      "--component-plist", componentPlistPath,
       "--identifier", "com.chuspeeism.codex-taskboard.pkg",
       "--version", version,
       "--install-location", "/",
