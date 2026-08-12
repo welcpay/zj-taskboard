@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.6.15";
+  const VERSION = "0.6.16";
   const SOURCE_HASH = window.__CODEX_TASKBOARD_SOURCE_HASH__;
   const SENTINEL_KEY = "__codexTaskboardInjection__";
   const DEFAULT_TASKBOARD_URL = "http://127.0.0.1:47823/?host=codex";
@@ -92,6 +92,7 @@
   let lastNativeThreadId = "";
   let lastNativeProjectId = "";
   let suspendedNativeBrowserPanel = null;
+  let activeNativeRouteHref = "";
   let active = false;
   let destroyed = false;
 
@@ -948,10 +949,14 @@
 
   function challengeFrameDocument(event) {
     if (!frame || event.currentTarget !== frame) return;
+    const wasReady = frameReady;
     frameReady = false;
     frameChallenge = crypto.randomUUID();
     if (active) showLoading();
     postFrameChallenge();
+    if (wasReady && active) {
+      schedulePanelRecovery(openGeneration, new Error("任务面板页面已离开受信任文档"));
+    }
   }
 
   function onFrameMessage(event) {
@@ -1600,6 +1605,7 @@
     }
     const generation = ++openGeneration;
     active = true;
+    activeNativeRouteHref = window.location.href;
     closeNativeBrowserPanel();
     ensureEntry();
     mountActivePage();
@@ -1707,6 +1713,7 @@
   }
 
   function onNativeRouteChange() {
+    if (window.location.href === activeNativeRouteHref) return;
     if (active) closeTaskboard(false);
   }
 

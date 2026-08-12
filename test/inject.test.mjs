@@ -13,7 +13,7 @@ const embeddedHost = await readFile(new URL("../web/src/embeddedHost.mjs", impor
 
 test("injection is an idempotent IIFE guarded by its current source hash", () => {
   assert.match(source, /^\(\(\) => \{/);
-  assert.match(source, /const VERSION = "0\.6\.15"/);
+  assert.match(source, /const VERSION = "0\.6\.16"/);
   assert.match(source, /const SOURCE_HASH = window\.__CODEX_TASKBOARD_SOURCE_HASH__/);
   assert.match(source, /const SENTINEL_KEY = "__codexTaskboardInjection__"/);
   assert.match(source, /previous\?\.sourceHash === SOURCE_HASH/);
@@ -364,9 +364,23 @@ test("cleanup removes observers, listeners, timers and owned DOM", () => {
   assert.match(source, /window\.removeEventListener\("message", onFrameMessage\)/);
   assert.match(source, /document\.removeEventListener\("click", onDocumentClick, true\)/);
   assert.match(source, /window\.removeEventListener\("popstate", onNativeRouteChange\)/);
+  assert.match(source, /window\.removeEventListener\("resize", scheduleRefresh\)/);
   assert.match(source, /window\.clearTimeout\(reattachTimer\)/);
   assert.match(source, /data-codex-taskboard-owned/);
   assert.match(source, /delete window\[SENTINEL_KEY\]/);
+});
+
+test("Codex route events close only after the top-level location actually changes", () => {
+  assert.match(source, /window\.addEventListener\("popstate", onNativeRouteChange\)/);
+  assert.match(source, /window\.addEventListener\("hashchange", onNativeRouteChange\)/);
+  assert.match(source, /activeNativeRouteHref = window\.location\.href/);
+  assert.match(source, /if \(window\.location\.href === activeNativeRouteHref\) return;/);
+  assert.match(source, /if \(!active \|\| !isNativePageNavigation\(event\.target\)\) return;\s*closeTaskboard\(false\);/);
+});
+
+test("a ready iframe that loads another document is hidden and recovered", () => {
+  assert.match(source, /const wasReady = frameReady/);
+  assert.match(source, /if \(wasReady && active\) \{\s*schedulePanelRecovery\(openGeneration/);
 });
 
 test("host integration stays thin", () => {
