@@ -345,7 +345,12 @@ test("host context captures all Codex projects even when the sidebar section is 
   assert.match(source, /data-app-action-sidebar-section-collapsed/);
   assert.match(source, /async function captureHostContext\(\)/);
   assert.match(source, /while \(!section && Date\.now\(\) < sectionDeadline\)/);
-  assert.match(source, /requestHostEnsure\(taskboardUrl\),\s*captureHostContext\(\),/);
+  assert.match(source, /function selectedNativeProjectId\(\)/);
+  assert.match(source, /Promise\.race\(\[\s*window\.electronBridge\?\.getInitialSidebarBootstrap\?\.call/);
+  assert.match(source, /window\.setTimeout\(\(\) => resolve\(null\), HOST_CONTEXT_BOOTSTRAP_TIMEOUT_MS\)/);
+  assert.match(source, /const contextPromise = captureHostContext\(\)/);
+  assert.match(source, /const result = await requestHostEnsure\(taskboardUrl\)/);
+  assert.match(source, /hostContextSnapshot = mergeHostContextSnapshot\(await contextPromise\)/);
   assert.match(source, /let lastNativeThreadId = ""/);
   assert.match(source, /clickedThreadId.*lastNativeThreadId/s);
   assert.match(source, /const currentThreadId = activeThreadId \|\| runningThreadId \|\| lastNativeThreadId/);

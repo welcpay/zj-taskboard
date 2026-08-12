@@ -26,6 +26,7 @@
   const FRAME_READY_TIMEOUT_MS = 12_000;
   const HOST_REQUEST_TIMEOUT_MS = 12_000;
   const HOST_HEARTBEAT_MAX_AGE_MS = 8_000;
+  const HOST_CONTEXT_BOOTSTRAP_TIMEOUT_MS = 800;
   const PANEL_RECOVERY_TIMEOUT_MS = 60_000;
   const PANEL_RECOVERY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 5_000];
   const MACOS_TITLEBAR_SAFE_LEFT = 80;
@@ -411,7 +412,15 @@
   }
 
   async function selectedNativeProjectId() {
-    const bootstrap = await window.electronBridge?.getInitialSidebarBootstrap?.();
+    const getInitialSidebarBootstrap = window.electronBridge?.getInitialSidebarBootstrap;
+    if (typeof getInitialSidebarBootstrap !== "function") return "";
+    const bootstrap = await Promise.race([
+      window.electronBridge?.getInitialSidebarBootstrap?.call(window.electronBridge)
+        .catch(() => null),
+      new Promise((resolve) => {
+        window.setTimeout(() => resolve(null), HOST_CONTEXT_BOOTSTRAP_TIMEOUT_MS);
+      }),
+    ]);
     const selectedProject = bootstrap?.globalStateEntries
       ?.find((entry) => entry.key === "selected-project")?.value;
     return typeof selectedProject?.projectId === "string" ? selectedProject.projectId : "";
@@ -1407,28 +1416,32 @@
     panelRecoveryError = null;
   }
 
+  function mergeHostContextSnapshot(context) {
+    return {
+      ...hostContextSnapshot,
+      ...context,
+      projects: context.projects.length > 0
+        ? context.projects
+        : hostContextSnapshot?.projects ?? [],
+    };
+  }
+
   async function recoverTaskboard(generation) {
     if (!active || destroyed || generation !== openGeneration) return;
     panelRecoveryInFlight = true;
     try {
       const taskboardUrl = resolveTaskboardUrl();
+      const contextPromise = captureHostContext();
       await requestHostEnsure(taskboardUrl);
       if (!active || destroyed || generation !== openGeneration) return;
-      const context = await captureHostContext();
-      if (!active || destroyed || generation !== openGeneration) return;
-      hostContextSnapshot = {
-        ...hostContextSnapshot,
-        ...context,
-        projects: context.projects.length > 0
-          ? context.projects
-          : hostContextSnapshot?.projects ?? [],
-      };
       const frameRequest = loadTaskboardFrame(true);
       if (!frameIsBlob) await requestHostLoadFrame(frameRequest);
       await waitForFrameReady();
       if (!active || destroyed || generation !== openGeneration) return;
       cancelPanelRecovery();
       showFrame();
+      hostContextSnapshot = mergeHostContextSnapshot(await contextPromise);
+      if (!active || destroyed || generation !== openGeneration) return;
       postHostContext();
     } catch (error) {
       if (!active || destroyed || generation !== openGeneration) return;
@@ -1474,18 +1487,9 @@
     else showLoading();
 
     try {
-      const [result, context] = await Promise.all([
-        requestHostEnsure(taskboardUrl),
-        captureHostContext(),
-      ]);
+      const contextPromise = captureHostContext();
+      const result = await requestHostEnsure(taskboardUrl);
       if (!active || generation !== openGeneration) return;
-      hostContextSnapshot = {
-        ...hostContextSnapshot,
-        ...context,
-        projects: context.projects.length > 0
-          ? context.projects
-          : hostContextSnapshot?.projects ?? [],
-      };
       if (!frameReady || result.restarted || !frameMatchesTaskboardUrl(taskboardUrl)) {
         showLoading();
         const frameRequest = loadTaskboardFrame();
@@ -1494,6 +1498,8 @@
       }
       if (!active || generation !== openGeneration) return;
       showFrame();
+      hostContextSnapshot = mergeHostContextSnapshot(await contextPromise);
+      if (!active || generation !== openGeneration) return;
       postHostContext();
     } catch (error) {
       if (!active || generation !== openGeneration) return;
