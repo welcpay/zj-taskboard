@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   artifactNames,
@@ -8,6 +9,25 @@ import {
   resolveReleaseVersion,
 } from "../scripts/release-app.mjs";
 import { renderReleaseNotes } from "../scripts/release-notes.mjs";
+
+const releaseVersion = "0.2.6";
+
+test("release 0.2.6 keeps every application version source in sync", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const packageLock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+  const cargoToml = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
+  const cargoLock = readFileSync(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
+  const tauriConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+  const injector = readFileSync(new URL("../inject/codex-taskboard.user.js", import.meta.url), "utf8");
+
+  assert.equal(packageJson.version, releaseVersion);
+  assert.equal(packageLock.version, releaseVersion);
+  assert.equal(packageLock.packages[""].version, releaseVersion);
+  assert.match(cargoToml, /^version = "0\.2\.6"$/m);
+  assert.match(cargoLock, /\[\[package\]\]\nname = "codex-taskboard-launcher"\nversion = "0\.2\.6"/);
+  assert.equal(tauriConfig.version, releaseVersion);
+  assert.match(injector, /const VERSION = "0\.6\.14"/);
+});
 
 test("release versions increment and explicit versions are validated", () => {
   assert.equal(nextPatchVersion("0.2.2"), "0.2.3");

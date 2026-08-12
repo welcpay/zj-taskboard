@@ -13,7 +13,7 @@ const embeddedHost = await readFile(new URL("../web/src/embeddedHost.mjs", impor
 
 test("injection is an idempotent IIFE guarded by its current source hash", () => {
   assert.match(source, /^\(\(\) => \{/);
-  assert.match(source, /const VERSION = "0\.6\.13"/);
+  assert.match(source, /const VERSION = "0\.6\.14"/);
   assert.match(source, /const SOURCE_HASH = window\.__CODEX_TASKBOARD_SOURCE_HASH__/);
   assert.match(source, /const SENTINEL_KEY = "__codexTaskboardInjection__"/);
   assert.match(source, /previous\?\.sourceHash === SOURCE_HASH/);
