@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { postinstallScript } from "../scripts/create-macos-pkg.mjs";
+import { postinstallScript, preinstallScript } from "../scripts/create-macos-pkg.mjs";
 
 const workflow = await readFile(new URL("../.github/workflows/release-macos.yml", import.meta.url), "utf8");
 const verifier = await readFile(new URL("../scripts/verify-macos-release.mjs", import.meta.url), "utf8");
@@ -26,6 +26,10 @@ test("the PKG stops the previous daemon and lets the installed App reconcile the
   assert.match(source, /pkgbuild/);
   assert.match(source, /productbuild/);
   const postinstall = postinstallScript("0.3.0");
+  const preinstall = preinstallScript();
+  assert.match(preinstall, /pkill[\s\S]*?Codex Taskboard\.app\/Contents\/MacOS\/codex-taskboard-launcher/);
+  assert.match(postinstall, /\/usr\/bin\/open\s+"\/Applications\/Codex Taskboard\.app"/);
+  assert.doesNotMatch(postinstall, /\/usr\/bin\/open\s+-a/);
   assert.match(postinstall, /daemonVersion/);
   assert.match(postinstall, /0\.3\.0/);
   assert.match(postinstall, /127\.0\.0\.1:47823\/health/);

@@ -23,6 +23,7 @@ console_user="$(/usr/bin/stat -f '%Su' /dev/console)"
 if [ -n "$console_user" ] && [ "$console_user" != "root" ]; then
   uid="$(/usr/bin/id -u "$console_user")"
   /bin/launchctl bootout "gui/$uid/${DAEMON_LABEL}" 2>/dev/null || true
+  /usr/bin/pkill -f "/Applications/${APP_NAME}/Contents/MacOS/codex-taskboard-launcher" 2>/dev/null || true
 fi
 exit 0
 `;
@@ -38,7 +39,7 @@ if [ -z "$console_user" ] || [ "$console_user" = "root" ] || [ "$console_user" =
 fi
 
 uid="$(/usr/bin/id -u "$console_user")"
-if ! /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$console_user" /usr/bin/open -a "/Applications/Codex Taskboard.app"; then
+if ! /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$console_user" /usr/bin/open "/Applications/Codex Taskboard.app"; then
   echo "Failed to launch Codex Taskboard for service reconciliation." >&2
   exit 1
 fi
