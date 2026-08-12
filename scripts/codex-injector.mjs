@@ -48,8 +48,6 @@ const taskboardOrigin = "http://127.0.0.1:47823";
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardBaseUrl = taskboardOrigin;
 const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex`;
-const taskboardEmbedToken = randomUUID();
-const taskboardEmbedTokenHeader = "x-codex-taskboard-embed-token";
 const hostBindingName = "__codexTaskboardHostV1";
 const hostRequestMessage = "__codexTaskboardHostRequestV1";
 const hostResponseMessage = "__codexTaskboardHostResponseV1";
@@ -1468,16 +1466,10 @@ async function injectAll(
 }
 
 async function currentInjectionSource() {
-  await registerTaskboardEmbedToken();
-  const [userScript, taskboardHtml] = await Promise.all([
-    readFile(injectionPath, "utf8"),
-    verifiedTaskboardHtml(),
-  ]);
+  const userScript = await readFile(injectionPath, "utf8");
   const runtimeSource = `window.__CODEX_TASKBOARD_MANAGED_ORIGIN__ = ${JSON.stringify(taskboardOrigin)};
 window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = ${JSON.stringify(hostCapability)};
 window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(taskboardPageUrl)};
-window.__codexTaskboardEmbedToken__ = ${JSON.stringify(taskboardEmbedToken)};
-window.__codexTaskboardHtml__ = ${JSON.stringify(taskboardHtml)};
 ${userScript}`;
   const sourceHash = createHash("sha256").update(runtimeSource).digest("hex");
   return {
@@ -1485,23 +1477,6 @@ ${userScript}`;
     source: `window[${JSON.stringify(injectionSourceHashName)}] = ${JSON.stringify(sourceHash)};
 ${runtimeSource}`,
   };
-}
-
-async function verifiedTaskboardHtml() {
-  const response = await fetch(taskboardPageUrl, {
-    cache: "no-store",
-    headers: { origin: "app://-" },
-  });
-  if (!response.ok) throw new Error(`Taskboard HTTP ${response.status}`);
-  return response.text();
-}
-
-async function registerTaskboardEmbedToken() {
-  const response = await fetch(`${taskboardBaseUrl}/api/local/embed-token`, {
-    method: "POST",
-    headers: { [taskboardEmbedTokenHeader]: taskboardEmbedToken },
-  });
-  if (!response.ok) throw new Error(`Embed token registration returned ${response.status}`);
 }
 
 async function main() {

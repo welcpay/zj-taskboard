@@ -10,9 +10,9 @@ import {
 } from "../scripts/release-app.mjs";
 import { renderReleaseNotes } from "../scripts/release-notes.mjs";
 
-const releaseVersion = "0.2.8";
+const releaseVersion = "0.2.9";
 
-test("release 0.2.8 keeps every application version source in sync", () => {
+test("release 0.2.9 keeps every application version source in sync", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   const cargoToml = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
@@ -23,8 +23,8 @@ test("release 0.2.8 keeps every application version source in sync", () => {
   assert.equal(packageJson.version, releaseVersion);
   assert.equal(packageLock.version, releaseVersion);
   assert.equal(packageLock.packages[""].version, releaseVersion);
-  assert.match(cargoToml, /^version = "0\.2\.8"$/m);
-  assert.match(cargoLock, /\[\[package\]\]\nname = "codex-taskboard-launcher"\nversion = "0\.2\.8"/);
+  assert.match(cargoToml, /^version = "0\.2\.9"$/m);
+  assert.match(cargoLock, /\[\[package\]\]\nname = "codex-taskboard-launcher"\nversion = "0\.2\.9"/);
   assert.equal(tauriConfig.version, releaseVersion);
   assert.match(injector, /const VERSION = "0\.6\.16"/);
 });

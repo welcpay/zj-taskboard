@@ -63,3 +63,17 @@
 ## 数据兼容
 
 升级只替换应用程序，历史项目、议题、评论和自动化策略继续保存在 `~/Library/Application Support/Codex Taskboard/`。安装前会创建数据备份并核对项目与议题数量。
+
+# Codex Taskboard 0.2.9
+
+发布日期：2026-08-12
+
+## 更新内容
+
+- 修复 Codex 151 中任务面板持续显示“正在打开/正在启动”并在会话与面板之间反复跳转的问题。
+- 面板 iframe 改为先挂载 sandboxed `about:blank`，再由启动器通过 CDP `Page.setDocumentContent` 注入已认证文档，避免 blob 文档可加载但子文档脚本不执行。
+- 保留 iframe capability/challenge 握手、服务自动恢复和固定 `127.0.0.1:47823` 常驻 daemon。
+
+## 数据兼容
+
+升级只替换应用程序，历史项目、议题、评论和自动化策略继续保存在 `~/Library/Application Support/Codex Taskboard/`。安装前会创建数据备份并核对项目与议题数量。

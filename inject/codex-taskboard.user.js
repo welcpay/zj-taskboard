@@ -70,7 +70,6 @@
   let frameTaskboardUrl = "";
   let frameCapability = "";
   let frameChallenge = "";
-  let frameIsBlob = false;
   let frameReady = false;
   let frameReadyWaiters = new Set();
   let hostRequests = new Map();
@@ -95,7 +94,6 @@
   let activeNativeRouteHref = "";
   let active = false;
   let destroyed = false;
-
   function normalizedLabel(value) {
     return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
@@ -677,7 +675,7 @@
 
   function postToFrame(message, allowUnready = false) {
     if (!frame?.contentWindow || !frameOrigin || (!allowUnready && !frameReady)) return;
-    frame.contentWindow.postMessage(message, frameIsBlob || frameOrigin === "null" ? "*" : frameOrigin);
+    frame.contentWindow.postMessage(message, frameOrigin === "null" ? "*" : frameOrigin);
   }
 
   const TASKBOARD_STORAGE_KEY = "__codexTaskboardEmbeddedStorage__";
@@ -961,11 +959,7 @@
 
   function onFrameMessage(event) {
     if (!frame || event.source !== frame.contentWindow) return;
-    if (frameIsBlob) {
-      if (event.origin !== "null" && event.origin !== window.location.origin) return;
-    } else if (event.origin !== frameOrigin) {
-      return;
-    }
+    if (event.origin !== frameOrigin) return;
     const message = event.data;
     if (
       !message
@@ -1156,89 +1150,6 @@
     });
   }
 
-  function taskboardBlobPrelude(baseUrl, capability, embedToken) {
-    const serializedOrigin = JSON.stringify(new URL(baseUrl).origin).replace(/</g, "\\u003c");
-    const serializedCapability = JSON.stringify(capability).replace(/</g, "\\u003c");
-    const serializedEmbedToken = JSON.stringify(embedToken).replace(/</g, "\\u003c");
-    return `<script>
-(() => {
-  const taskboardOrigin = ${serializedOrigin};
-  const embedToken = ${serializedEmbedToken};
-  const embedTokenHeader = "x-codex-taskboard-embed-token";
-  const embedTokenQuery = "__codex_taskboard_embed_token";
-  globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__ = ${serializedCapability};
-  const RealURLSearchParams = window.URLSearchParams;
-  class TaskboardURLSearchParams extends RealURLSearchParams {
-    get(name) {
-      if (name === "host") return "codex";
-      if (name === "taskboard-origin") return taskboardOrigin;
-      return super.get(name);
-    }
-  }
-  window.URLSearchParams = TaskboardURLSearchParams;
-
-  const realFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => {
-    const inputUrl = input instanceof Request ? input.url : String(input);
-    const target = new URL(inputUrl, document.baseURI);
-    if (target.origin !== taskboardOrigin) return realFetch(input, init);
-    const headers = new Headers(input instanceof Request ? input.headers : undefined);
-    new Headers(init && init.headers).forEach((value, key) => headers.set(key, value));
-    headers.set(embedTokenHeader, embedToken);
-    return realFetch(input, { ...(init || {}), headers });
-  };
-
-  const RealEventSource = window.EventSource;
-  class TaskboardEventSource extends RealEventSource {
-    constructor(url, options) {
-      const target = new URL(String(url), document.baseURI);
-      if (target.origin === taskboardOrigin) target.searchParams.set(embedTokenQuery, embedToken);
-      super(target.href, options);
-    }
-  }
-  window.EventSource = TaskboardEventSource;
-  const store = new Map();
-  const storage = {
-    get length() { return store.size; },
-    key(index) { return Array.from(store.keys())[index] ?? null; },
-    getItem(key) { return store.has(key) ? store.get(key) : null; },
-    setItem(key, value) {
-      store.set(String(key), String(value));
-      window.parent.postMessage({ type: "taskboard:storage-set", payload: { key: String(key), value: String(value) } }, "*");
-    },
-    removeItem(key) {
-      store.delete(String(key));
-      window.parent.postMessage({ type: "taskboard:storage-remove", payload: { key: String(key) } }, "*");
-    },
-    clear() {
-      store.clear();
-      window.parent.postMessage({ type: "taskboard:storage-clear" }, "*");
-    },
-  };
-  Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
-  window.addEventListener("message", (event) => {
-    if (event.data && event.data.type === "taskboard:storage-init") {
-      store.clear();
-      for (const [key, value] of Object.entries(event.data.payload || {})) store.set(key, value);
-    }
-  });
-  window.parent.postMessage({ type: "taskboard:storage-request" }, "*");
-})();
-</script>`;
-  }
-
-  function createTaskboardBlobUrl(baseUrl, html, capability, embedToken) {
-    const base = `<base href=${JSON.stringify(baseUrl)}>`;
-    const rewritten = String(html)
-      .replace(/^<!doctype[^>]*>/i, "")
-      .replace(
-        /<head[^>]*>/i,
-        (match) => `${match}${base}${taskboardBlobPrelude(baseUrl, capability, embedToken)}`,
-      );
-    const blobHtml = `<!doctype html>${rewritten}`;
-    return URL.createObjectURL(new Blob([blobHtml], { type: "text/html" }));
-  }
-
   function loadTaskboardFrame(cacheBust = false) {
     cancelFrameReadyWaiters(new Error("任务面板正在重新加载"));
     frame?.remove();
@@ -1247,7 +1158,6 @@
     frameCapability = "";
     frameChallenge = "";
     frameReady = false;
-    frameIsBlob = false;
     if (dragRegion) dragRegion.hidden = true;
     if (noDragLeft) noDragLeft.hidden = true;
     if (noDragRight) noDragRight.hidden = true;
@@ -1269,30 +1179,10 @@
     nextFrame.referrerPolicy = "no-referrer";
     nextFrame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-downloads");
     nextFrame.setAttribute("allow", "clipboard-read; clipboard-write");
-    const managedHtml = window.__codexTaskboardHtml__;
-    const embedToken = window.__codexTaskboardEmbedToken__;
-    let blobUrl = "";
-    if (
-      typeof managedHtml === "string"
-      && managedHtml.length > 0
-      && typeof embedToken === "string"
-      && embedToken.length > 0
-    ) {
-      // Codex renderers whose CSP blocks arbitrary http iframes still allow
-      // blob: frames. Attach the opaque sandbox before navigating because
-      // Codex 151 does not commit a pre-attached blob navigation.
-      blobUrl = createTaskboardBlobUrl(
-        taskboardUrl.href,
-        managedHtml,
-        frameCapability,
-        embedToken,
-      );
-      frameIsBlob = true;
-    }
+    nextFrame.src = "about:blank";
     nextFrame.addEventListener("load", challengeFrameDocument);
     frame = nextFrame;
     page.appendChild(nextFrame);
-    if (blobUrl) nextFrame.src = blobUrl;
     return { frameName, frameCapability };
   }
 
@@ -1301,7 +1191,7 @@
     const generation = ++openGeneration;
     if (active) showLoading();
     const frameRequest = loadTaskboardFrame(true);
-    void (frameIsBlob ? Promise.resolve() : requestHostLoadFrame(frameRequest))
+    void requestHostLoadFrame(frameRequest)
       .then(() => waitForFrameReady())
       .then(() => {
           if (!active || generation !== openGeneration) return;
@@ -1440,7 +1330,7 @@
       await requestHostEnsure(taskboardUrl);
       if (!active || destroyed || generation !== openGeneration) return;
       const frameRequest = loadTaskboardFrame(true);
-      if (!frameIsBlob) await requestHostLoadFrame(frameRequest);
+      await requestHostLoadFrame(frameRequest);
       await waitForFrameReady();
       if (!active || destroyed || generation !== openGeneration) return;
       cancelPanelRecovery();
@@ -1498,7 +1388,7 @@
       if (!frameReady || result.restarted || !frameMatchesTaskboardUrl(taskboardUrl)) {
         showLoading();
         const frameRequest = loadTaskboardFrame();
-        if (!frameIsBlob) await requestHostLoadFrame(frameRequest);
+        await requestHostLoadFrame(frameRequest);
         await waitForFrameReady();
       }
       if (!active || generation !== openGeneration) return;
@@ -1708,7 +1598,6 @@
     frameOrigin = "";
     taskboardOrigin = "";
     frameTaskboardUrl = "";
-    frameIsBlob = false;
     if (window[SENTINEL_KEY] === api) delete window[SENTINEL_KEY];
   }
 

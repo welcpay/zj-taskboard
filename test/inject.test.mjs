@@ -26,7 +26,7 @@ test("embedded page uses the launcher URL inside an opaque sandbox", () => {
   assert.match(source, /http:\/\/127\.0\.0\.1:47823\/\?host=codex/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__/);
   assert.match(source, /nextFrame\.name = frameName/);
-  assert.match(source, /page\.appendChild\(nextFrame\);\s*if \(blobUrl\) nextFrame\.src = blobUrl/);
+  assert.match(source, /nextFrame\.src = "about:blank";[\s\S]*page\.appendChild\(nextFrame\)/);
   assert.match(source, /requestHost\("load-frame", \{ frameName, frameCapability: capability \}\)/);
   assert.match(source, /frameCapability = crypto\.randomUUID\(\)/);
   assert.match(source, /nextFrame\.setAttribute\("sandbox", "allow-scripts/);
@@ -146,7 +146,7 @@ test("panel recovery replaces the failed frame and stale generations cannot win"
   assert.match(source, /async function recoverTaskboard\(generation\)/);
   assert.match(source, /await requestHostEnsure\(taskboardUrl\)/);
   assert.match(source, /const frameRequest = loadTaskboardFrame\(true\)/);
-  assert.match(source, /if \(!frameIsBlob\) await requestHostLoadFrame\(frameRequest\)/);
+  assert.match(source, /await requestHostLoadFrame\(frameRequest\)/);
   assert.match(source, /await waitForFrameReady\(\)/);
   assert.match(source, /if \(!active \|\| destroyed \|\| generation !== openGeneration\) return/);
   assert.match(source, /cancelPanelRecovery\(\);\s*showFrame\(\)/);
@@ -193,7 +193,7 @@ test("opaque iframe messages require the current document capability", () => {
   assert.match(source, /type: "taskboard:frame-challenge"/);
   assert.match(source, /frameCapability = ""/);
   assert.doesNotMatch(source, /nextFrame\.addEventListener\("load", postHostContext\)/);
-  assert.match(source, /postMessage\(message, frameIsBlob \|\| frameOrigin === "null" \? "\*" : frameOrigin\)/);
+  assert.match(source, /postMessage\(message, frameOrigin === "null" \? "\*" : frameOrigin\)/);
 });
 
 test("packaged HTTPS links are opened by the authenticated host instead of a sandbox popup", () => {
@@ -390,6 +390,6 @@ test("host integration stays thin", () => {
   assert.match(source, /type: "navigate-to-route"/);
   assert.doesNotMatch(source, /__codexSessionDeleteBridge/);
   assert.doesNotMatch(source, /import\s*\(/);
-  assert.match(source, /const realFetch = window\.fetch\.bind\(window\)/);
-  assert.match(source, /if \(target\.origin !== taskboardOrigin\) return realFetch\(input, init\)/);
+  assert.match(source, /await requestHostLoadFrame\(frameRequest\)/);
+  assert.doesNotMatch(source, /taskboardBlobPrelude/);
 });

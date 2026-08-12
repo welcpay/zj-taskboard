@@ -12,31 +12,28 @@ const injector = await readFile(
 );
 const server = await readFile(new URL("../server/app.mjs", import.meta.url), "utf8");
 
-test("Codex 151 loads Taskboard through a protected blob document", () => {
-  assert.match(injection, /function taskboardBlobPrelude/);
-  assert.match(injection, /URL\.createObjectURL\(new Blob/);
-  assert.match(injection, /__CODEX_TASKBOARD_FRAME_CAPABILITY__/);
-  assert.match(injection, /__codex_taskboard_embed_token/);
-  assert.match(injection, /Object\.defineProperty\(window, "localStorage"/);
-  assert.match(injection, /__codexTaskboardEmbedToken__/);
-  assert.match(injection, /frameIsBlob \? Promise\.resolve\(\) : requestHostLoadFrame/);
-  assert.match(injection, /if \(!frameIsBlob\) await requestHostLoadFrame/);
+test("Codex 151 loads Taskboard through an authenticated sandboxed document", () => {
+  assert.match(injection, /nextFrame\.src = "about:blank"/);
+  assert.match(injection, /await requestHostLoadFrame\(frameRequest\)/);
   assert.match(injection, /siblings\.length >= 2/);
-  assert.match(injector, /window\.__codexTaskboardHtml__/);
-  assert.match(injector, /registerTaskboardEmbedToken/);
+  assert.match(injector, /Page\.setDocumentContent/);
+  assert.match(injector, /verifiedTaskboardDocument/);
+  assert.match(injector, /__CODEX_TASKBOARD_FRAME_CAPABILITY__/);
   assert.match(server, /TRUSTED_EMBED_ORIGINS = new Set\(\["app:\/\/-", "null"\]\)/);
-  assert.match(server, /EMBED_TOKEN_HEADER/);
+  assert.doesNotMatch(injection, /URL\.createObjectURL\(new Blob/);
+  assert.doesNotMatch(injector, /__codexTaskboardHtml__/);
 });
 
-test("Codex 151 attaches the sandboxed frame before starting its blob navigation", () => {
+test("Codex 151 attaches the sandboxed frame before authenticated CDP document loading", () => {
   const loadFrameStart = injection.indexOf("function loadTaskboardFrame(");
   const loadFrameEnd = injection.indexOf("\n  function reloadFrame()", loadFrameStart);
   const loadFrameSource = injection.slice(loadFrameStart, loadFrameEnd);
   const listenAt = loadFrameSource.indexOf('nextFrame.addEventListener("load"');
   const appendAt = loadFrameSource.indexOf("page.appendChild(nextFrame)");
-  const blobNavigateAt = loadFrameSource.indexOf("if (blobUrl) nextFrame.src = blobUrl");
+  const aboutBlankAt = loadFrameSource.indexOf('nextFrame.src = "about:blank"');
 
   assert.ok(listenAt >= 0, "frame load listener is registered");
   assert.ok(appendAt > listenAt, "frame is attached after registering its load listener");
-  assert.ok(blobNavigateAt > appendAt, "blob navigation starts only after the frame is attached");
+  assert.ok(aboutBlankAt >= 0, "sandboxed frame starts at about:blank");
+  assert.ok(aboutBlankAt < appendAt, "about:blank is set before the frame is attached");
 });

@@ -52,8 +52,8 @@ const INLINE_ATTACHMENT_TYPES = new Set([
   "text/plain",
 ]);
 const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
-// "null" is the serialized origin of blob:-document iframes, which the Codex
-// renderer uses to embed the taskboard since its CSP blocks direct http iframes.
+// "null" is the serialized origin of the sandboxed about:blank document that
+// Codex uses to host the Taskboard content injected through CDP.
 const TRUSTED_EMBED_ORIGINS = new Set(["app://-", "null"]);
 const EMBED_TOKEN_HEADER = "x-codex-taskboard-embed-token";
 const EMBED_TOKEN_QUERY = "__codex_taskboard_embed_token";
