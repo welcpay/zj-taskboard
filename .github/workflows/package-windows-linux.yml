@@ -1,0 +1,112 @@
+name: Package Windows and Linux
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-windows-linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: ${{ matrix.platform }} x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: Windows
+            target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+            artifact_suffix: windows-x64-unsigned
+          - os: ubuntu-24.04
+            platform: Linux
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+            artifact_suffix: linux-x64-unsigned
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libxdo-dev \
+            patchelf
+
+      - run: npm ci
+
+      - name: Verify version alignment
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          CARGO_VERSION="$(node -e 'const fs=require("fs"); const source=fs.readFileSync("src-tauri/Cargo.toml","utf8"); console.log(source.match(/^version = "([^"]+)"/m)[1])')"
+          TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          test "$PACKAGE_VERSION" = "$CARGO_VERSION"
+          test "$PACKAGE_VERSION" = "$TAURI_VERSION"
+          echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - run: npm run app:prepare -- --target ${{ matrix.target }}
+
+      - name: Build native unsigned installers
+        run: >-
+          npm run tauri -- build
+          --target ${{ matrix.target }}
+          --bundles ${{ matrix.bundles }}
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Verify Windows installer outputs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path "src-tauri/target/${{ matrix.target }}/release/bundle/msi" -Recurse -Filter *.msi
+          $nsis = Get-ChildItem -Path "src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Recurse -Filter *.exe
+          if ($msi.Count -lt 1 -or $nsis.Count -lt 1) { throw "Expected MSI and NSIS packages" }
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          Copy-Item $msi.FullName release-artifacts/
+          Copy-Item $nsis.FullName release-artifacts/
+
+      - name: Verify Linux installer outputs
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "src-tauri/target/${{ matrix.target }}/release/bundle/deb" -name '*.deb' -type f -print -quit | grep -q .
+          find "src-tauri/target/${{ matrix.target }}/release/bundle/appimage" -name '*.AppImage' -type f -print -quit | grep -q .
+          mkdir -p release-artifacts
+          find "src-tauri/target/${{ matrix.target }}/release/bundle/deb" -name '*.deb' -type f -exec cp {} release-artifacts/ \;
+          find "src-tauri/target/${{ matrix.target }}/release/bundle/appimage" -name '*.AppImage' -type f -exec cp {} release-artifacts/ \;
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-taskboard-${{ steps.version.outputs.version }}-${{ matrix.artifact_suffix }}
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 14

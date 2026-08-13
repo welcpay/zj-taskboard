@@ -16,7 +16,7 @@
     "resources": {
       "resources/": ""
     },
-    "icon": ["icons/icon.png", "icons/icon.icns"],
+    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
     "macOS": {
       "minimumSystemVersion": "14.0",
       "hardenedRuntime": true,

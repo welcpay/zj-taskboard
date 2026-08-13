@@ -1,5 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(not(target_os = "macos"))]
+mod platform_daemon;
+#[cfg(not(target_os = "macos"))]
+mod portable;
+
+macro_rules! macos_only {
+    ($($item:item)*) => {
+        $(
+            #[cfg(target_os = "macos")]
+            $item
+        )*
+    };
+}
+
+macos_only! {
+#[path = "daemon.rs"]
 mod daemon;
 
 use serde::{Deserialize, Serialize};
@@ -681,7 +697,7 @@ async fn offer_update(
     }
 }
 
-fn main() {
+pub fn run() {
     let app = tauri::Builder::default()
         .enable_macos_default_menu(false)
         .plugin(tauri_plugin_dialog::init())
@@ -890,4 +906,15 @@ fn main() {
         }
         _ => {}
     });
+}
+}
+
+#[cfg(target_os = "macos")]
+fn main() {
+    run();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    portable::run();
 }

@@ -18,54 +18,69 @@ import {
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-if (process.platform !== "darwin") {
-  throw new Error("Codex Taskboard for macOS must be prepared on macOS");
-}
-
 const nodeVersion = "22.23.2";
-const nodeArchitectures = ["arm64", "x64"];
-const nodeArchiveSha256 = {
+const targets = {
+  "aarch64-apple-darwin": { platform: "macos", architecture: "arm64" },
+  "x86_64-apple-darwin": { platform: "macos", architecture: "x64" },
+  "universal-apple-darwin": { platform: "macos", architecture: "universal" },
+  "x86_64-pc-windows-msvc": {
+    platform: "windows",
+    archive: "node-v22.23.2-win-x64.zip",
+    archiveRoot: "node-v22.23.2-win-x64",
+    executable: "node.exe",
+    binaryPath: "node.exe",
+    sidecar: "node-x86_64-pc-windows-msvc.exe",
+    checksum: "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97",
+  },
+  "x86_64-unknown-linux-gnu": {
+    platform: "linux",
+    archive: "node-v22.23.2-linux-x64.tar.xz",
+    archiveRoot: "node-v22.23.2-linux-x64",
+    executable: "node",
+    binaryPath: "bin/node",
+    sidecar: "node-x86_64-unknown-linux-gnu",
+    checksum: "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307",
+  },
+};
+const macChecksums = {
   arm64: "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
   x64: "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026",
 };
-const supportedTargets = new Set([
-  "aarch64-apple-darwin",
-  "x86_64-apple-darwin",
-  "universal-apple-darwin",
-]);
-const scriptPath = fileURLToPath(import.meta.url);
-const projectRoot = path.resolve(path.dirname(scriptPath), "..");
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tauriRoot = path.join(projectRoot, "src-tauri");
 const binariesDirectory = path.join(tauriRoot, "binaries");
 const resourcesDirectory = path.join(tauriRoot, "resources");
 const runtimeCacheDirectory = path.join(projectRoot, "dist", "tauri-runtime-cache");
 const extractionDirectory = path.join(runtimeCacheDirectory, "extracted");
 const target = parseTarget(process.argv.slice(2));
+const configuration = targets[target];
 
 function parseTarget(argv) {
   let selected = "universal-apple-darwin";
   for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === "--target") selected = argv[++index];
-    else throw new Error(`Unknown option: ${argument}`);
+    if (argv[index] === "--target") selected = argv[++index];
+    else throw new Error("Unknown option: " + argv[index]);
   }
-  if (!supportedTargets.has(selected)) {
-    throw new Error(`Unsupported macOS target: ${selected}`);
-  }
+  if (!targets[selected]) throw new Error("Unsupported Tauri target: " + selected);
   return selected;
+}
+
+function requireNativeHost(platform) {
+  const expected = { macos: "darwin", windows: "win32", linux: "linux" }[platform];
+  if (process.platform !== expected) {
+    throw new Error("Target " + target + " must be prepared on its native " + platform + " runner");
+  }
 }
 
 function run(command, args) {
   const result = spawnSync(command, args, { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(result.stderr.trim() || `${command} exited with ${result.status}`);
-  }
+  if (result.status !== 0) throw new Error(result.stderr.trim() || command + " exited with " + result.status);
   return result.stdout.trim();
 }
 
-async function exists(targetPath) {
+async function exists(filePath) {
   try {
-    await stat(targetPath);
+    await stat(filePath);
     return true;
   } catch {
     return false;
@@ -73,100 +88,98 @@ async function exists(targetPath) {
 }
 
 async function sha256(filePath) {
-  const hash = createHash("sha256");
-  hash.update(await readFile(filePath));
-  return hash.digest("hex");
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
 }
 
 async function download(url, destination) {
   const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status} ${response.statusText} (${url})`);
-  }
-  const temporaryPath = `${destination}.download`;
-  await writeFile(temporaryPath, Buffer.from(await response.arrayBuffer()));
-  await rename(temporaryPath, destination);
+  if (!response.ok) throw new Error("Download failed: " + response.status + " " + url);
+  const temporary = destination + ".download";
+  await writeFile(temporary, Buffer.from(await response.arrayBuffer()));
+  await rename(temporary, destination);
 }
 
-async function verifiedNodeArchive(architecture) {
-  const archiveName = `node-v${nodeVersion}-darwin-${architecture}.tar.gz`;
-  const expectedChecksum = nodeArchiveSha256[architecture];
-
-  const archivePath = path.join(runtimeCacheDirectory, archiveName);
-  if (!(await exists(archivePath)) || (await sha256(archivePath)) !== expectedChecksum) {
+async function verifiedArchive(archive, checksum) {
+  const archivePath = path.join(runtimeCacheDirectory, archive);
+  if (!(await exists(archivePath)) || (await sha256(archivePath)) !== checksum) {
     await rm(archivePath, { force: true });
-    await download(`https://nodejs.org/dist/v${nodeVersion}/${archiveName}`, archivePath);
+    await download("https://nodejs.org/dist/v" + nodeVersion + "/" + archive, archivePath);
   }
-  if ((await sha256(archivePath)) !== expectedChecksum) {
-    throw new Error(`Checksum verification failed for ${archiveName}`);
-  }
-  return { archiveName, archivePath };
+  if ((await sha256(archivePath)) !== checksum) throw new Error("Checksum verification failed for " + archive);
+  return archivePath;
 }
 
-async function extractNodeRuntime(architecture) {
-  const { archivePath } = await verifiedNodeArchive(architecture);
-  const destination = path.join(extractionDirectory, architecture);
+async function extractNode({ archive, archiveRoot, checksum, extractionName }) {
+  const archivePath = await verifiedArchive(archive, checksum);
+  const destination = path.join(extractionDirectory, extractionName);
   await rm(destination, { recursive: true, force: true });
   await mkdir(destination, { recursive: true });
-  run("/usr/bin/tar", ["-xzf", archivePath, "-C", destination]);
-  return path.join(destination, `node-v${nodeVersion}-darwin-${architecture}`);
+  run("tar", ["-xf", archivePath, "-C", destination]);
+  return path.join(destination, archiveRoot);
 }
 
-async function prepareNodeRuntime() {
+async function prepareMacNode() {
   const runtimes = new Map();
-  for (const architecture of nodeArchitectures) {
-    runtimes.set(architecture, await extractNodeRuntime(architecture));
+  for (const architecture of ["arm64", "x64"]) {
+    runtimes.set(architecture, await extractNode({
+      archive: "node-v" + nodeVersion + "-darwin-" + architecture + ".tar.gz",
+      archiveRoot: "node-v" + nodeVersion + "-darwin-" + architecture,
+      checksum: macChecksums[architecture],
+      extractionName: "darwin-" + architecture,
+    }));
   }
-
-  const universalNodePath = path.join(binariesDirectory, "node-universal-apple-darwin");
+  const universalNode = path.join(binariesDirectory, "node-universal-apple-darwin");
   await mkdir(binariesDirectory, { recursive: true });
   run("/usr/bin/lipo", [
     "-create",
     path.join(runtimes.get("arm64"), "bin", "node"),
     path.join(runtimes.get("x64"), "bin", "node"),
     "-output",
-    universalNodePath,
+    universalNode,
   ]);
-  await chmod(universalNodePath, 0o755);
-  const architectures = run("/usr/bin/lipo", ["-archs", universalNodePath]);
+  await chmod(universalNode, 0o755);
+  const architectures = run("/usr/bin/lipo", ["-archs", universalNode]);
   if (!architectures.includes("arm64") || !architectures.includes("x86_64")) {
-    throw new Error(`Universal Node runtime has unexpected architectures: ${architectures}`);
+    throw new Error("Universal Node runtime has unexpected architectures: " + architectures);
   }
+  for (const triple of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+    const sidecar = path.join(binariesDirectory, "node-" + triple);
+    await rm(sidecar, { force: true });
+    await link(universalNode, sidecar);
+  }
+  await copyFile(path.join(runtimes.get("arm64"), "LICENSE"), path.join(resourcesDirectory, "licenses", "Node-LICENSE"));
+  return { path: universalNode, binary: "node" };
+}
 
-  for (const targetTriple of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
-    const targetPath = path.join(binariesDirectory, `node-${targetTriple}`);
-    await rm(targetPath, { force: true });
-    await link(universalNodePath, targetPath);
-  }
-  await mkdir(path.join(resourcesDirectory, "licenses"), { recursive: true });
-  await copyFile(
-    path.join(runtimes.get("arm64"), "LICENSE"),
-    path.join(resourcesDirectory, "licenses", "Node-LICENSE"),
-  );
-  await copyFile(
-    path.join(tauriRoot, "licenses", "Lobe-Icons-LICENSE.txt"),
-    path.join(resourcesDirectory, "licenses", "Lobe-Icons-LICENSE.txt"),
-  );
+async function prepareNativeNode() {
+  const runtime = await extractNode({
+    archive: configuration.archive,
+    archiveRoot: configuration.archiveRoot,
+    checksum: configuration.checksum,
+    extractionName: target,
+  });
+  const source = path.join(runtime, configuration.binaryPath);
+  const sidecar = path.join(binariesDirectory, configuration.sidecar);
+  await mkdir(binariesDirectory, { recursive: true });
+  await rm(sidecar, { force: true });
+  await copyFile(source, sidecar);
+  if (configuration.platform === "linux") await chmod(sidecar, 0o755);
+  await copyFile(path.join(runtime, "LICENSE"), path.join(resourcesDirectory, "licenses", "Node-LICENSE"));
+  return { path: sidecar, binary: configuration.executable };
 }
 
 async function copyApplicationResources() {
-  const appResources = path.join(resourcesDirectory, "app");
+  const app = path.join(resourcesDirectory, "app");
   await rm(resourcesDirectory, { recursive: true, force: true });
-  await mkdir(appResources, { recursive: true });
+  await mkdir(path.join(resourcesDirectory, "licenses"), { recursive: true });
+  await mkdir(app, { recursive: true });
   await Promise.all([
-    cp(path.join(projectRoot, "server"), path.join(appResources, "server"), { recursive: true }),
-    cp(path.join(projectRoot, "shared"), path.join(appResources, "shared"), { recursive: true }),
-    cp(path.join(projectRoot, "dist", "web"), path.join(appResources, "dist", "web"), {
-      recursive: true,
-    }),
-    cp(
-      path.join(projectRoot, "skills", "manage-taskboard"),
-      path.join(appResources, "skills", "manage-taskboard"),
-      { recursive: true },
-    ),
+    cp(path.join(projectRoot, "server"), path.join(app, "server"), { recursive: true }),
+    cp(path.join(projectRoot, "shared"), path.join(app, "shared"), { recursive: true }),
+    cp(path.join(projectRoot, "dist", "web"), path.join(app, "dist", "web"), { recursive: true }),
+    cp(path.join(projectRoot, "skills", "manage-taskboard"), path.join(app, "skills", "manage-taskboard"), { recursive: true }),
   ]);
-
-  await mkdir(path.join(appResources, "scripts"), { recursive: true });
+  await mkdir(path.join(app, "scripts"), { recursive: true });
   for (const fileName of [
     "codex-cdp-pipe.mjs",
     "codex-injector.mjs",
@@ -174,78 +187,74 @@ async function copyApplicationResources() {
     "codex-rate-limits.mjs",
     "taskboard-supervisor.mjs",
   ]) {
-    await copyFile(
-      path.join(projectRoot, "scripts", fileName),
-      path.join(appResources, "scripts", fileName),
-    );
+    await copyFile(path.join(projectRoot, "scripts", fileName), path.join(app, "scripts", fileName));
   }
-  await mkdir(path.join(appResources, "inject"), { recursive: true });
-  await copyFile(
-    path.join(projectRoot, "inject", "codex-taskboard.user.js"),
-    path.join(appResources, "inject", "codex-taskboard.user.js"),
-  );
-  await mkdir(path.join(appResources, "cli"), { recursive: true });
-  await copyFile(
-    path.join(projectRoot, "cli", "taskctl.mjs"),
-    path.join(appResources, "cli", "taskctl.mjs"),
-  );
+  await mkdir(path.join(app, "inject"), { recursive: true });
+  await copyFile(path.join(projectRoot, "inject", "codex-taskboard.user.js"), path.join(app, "inject", "codex-taskboard.user.js"));
+  await mkdir(path.join(app, "cli"), { recursive: true });
+  await copyFile(path.join(projectRoot, "cli", "taskctl.mjs"), path.join(app, "cli", "taskctl.mjs"));
+  await copyFile(path.join(tauriRoot, "licenses", "Lobe-Icons-LICENSE.txt"), path.join(resourcesDirectory, "licenses", "Lobe-Icons-LICENSE.txt"));
+}
 
-  const taskctlWrapper = `#!/bin/zsh
-set -u
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONTENTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-export CODEX_TASKBOARD_DATA_DIR="$HOME/Library/Application Support/Codex Taskboard"
-export CODEX_TASKBOARD_URL="http://127.0.0.1:47823"
-exec "$CONTENTS_DIR/MacOS/node" "$CONTENTS_DIR/Resources/app/cli/taskctl.mjs" "$@"
-`;
-  const taskctlPath = path.join(resourcesDirectory, "bin", "taskctl");
-  await mkdir(path.dirname(taskctlPath), { recursive: true });
-  await writeFile(taskctlPath, taskctlWrapper);
-  await chmod(taskctlPath, 0o755);
+async function writeTaskctlWrapper(node) {
+  const bin = path.join(resourcesDirectory, "bin");
+  await mkdir(bin, { recursive: true });
+  if (configuration.platform === "macos") {
+    const lines = ["#!/bin/zsh", "set -u", "SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"", "CONTENTS_DIR=\"$(cd \"$SCRIPT_DIR/../..\" && pwd)\"", "export CODEX_TASKBOARD_DATA_DIR=\"$HOME/Library/Application Support/Codex Taskboard\"", "export CODEX_TASKBOARD_URL=\"http://127.0.0.1:47823\"", "exec \"$CONTENTS_DIR/MacOS/node\" \"$CONTENTS_DIR/Resources/app/cli/taskctl.mjs\" \"$@\"", ""];
+    const taskctl = path.join(bin, "taskctl");
+    await writeFile(taskctl, lines.join("\n"));
+    await chmod(taskctl, 0o755);
+    return;
+  }
+  const bundledNode = path.join(bin, node.binary);
+  await copyFile(node.path, bundledNode);
+  if (configuration.platform === "windows") {
+    const lines = ["@echo off", "setlocal", "set \"SCRIPT_DIR=%~dp0\"", "set \"CODEX_TASKBOARD_DATA_DIR=%LOCALAPPDATA%\\\\Codex Taskboard\"", "set \"CODEX_TASKBOARD_URL=http://127.0.0.1:47823\"", "\"%SCRIPT_DIR%node.exe\" \"%SCRIPT_DIR%..\\\\app\\\\cli\\\\taskctl.mjs\" %*", ""];
+    await writeFile(path.join(bin, "taskctl.cmd"), lines.join("\r\n"));
+    return;
+  }
+  const lines = ["#!/bin/sh", "set -eu", "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"", "export CODEX_TASKBOARD_DATA_DIR=\"$HOME/.local/share/Codex Taskboard\"", "export CODEX_TASKBOARD_URL=\"http://127.0.0.1:47823\"", "exec \"$SCRIPT_DIR/node\" \"$SCRIPT_DIR/../app/cli/taskctl.mjs\" \"$@\"", ""];
+  const taskctl = path.join(bin, "taskctl");
+  await writeFile(taskctl, lines.join("\n"));
+  await chmod(taskctl, 0o755);
 }
 
 async function runtimeFiles(directory, prefix = "") {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const relativePath = path.join(prefix, entry.name);
-    if (entry.isDirectory()) {
-      result.push(...await runtimeFiles(path.join(directory, entry.name), relativePath));
-    } else if (entry.isFile()) {
-      result.push(relativePath);
-    }
+    const relative = path.join(prefix, entry.name);
+    if (entry.isDirectory()) result.push(...await runtimeFiles(path.join(directory, entry.name), relative));
+    else if (entry.isFile()) result.push(relative);
   }
   return result.sort();
 }
 
-async function prepareDaemonRuntime() {
-  const daemonRuntime = path.join(resourcesDirectory, "daemon-runtime");
-  const daemonApp = path.join(daemonRuntime, "app");
+async function prepareDaemonRuntime(node) {
+  const runtime = path.join(resourcesDirectory, "daemon-runtime");
+  const app = path.join(runtime, "app");
   const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
-  await rm(daemonRuntime, { recursive: true, force: true });
-  await mkdir(daemonApp, { recursive: true });
+  await rm(runtime, { recursive: true, force: true });
+  await mkdir(app, { recursive: true });
   await Promise.all([
-    copyFile(path.join(binariesDirectory, "node-universal-apple-darwin"), path.join(daemonRuntime, "node")),
-    copyFile(path.join(projectRoot, "scripts", "taskboard-daemon.mjs"), path.join(daemonApp, "taskboard-daemon.mjs")),
-    cp(path.join(projectRoot, "server"), path.join(daemonApp, "server"), { recursive: true }),
-    cp(path.join(projectRoot, "shared"), path.join(daemonApp, "shared"), { recursive: true }),
-    cp(path.join(projectRoot, "dist", "web"), path.join(daemonApp, "dist", "web"), { recursive: true }),
+    copyFile(node.path, path.join(runtime, node.binary)),
+    copyFile(path.join(projectRoot, "scripts", "taskboard-daemon.mjs"), path.join(app, "taskboard-daemon.mjs")),
+    cp(path.join(projectRoot, "server"), path.join(app, "server"), { recursive: true }),
+    cp(path.join(projectRoot, "shared"), path.join(app, "shared"), { recursive: true }),
+    cp(path.join(projectRoot, "dist", "web"), path.join(app, "dist", "web"), { recursive: true }),
   ]);
-  await chmod(path.join(daemonRuntime, "node"), 0o755);
+  if (configuration.platform !== "windows") await chmod(path.join(runtime, node.binary), 0o755);
   const files = {};
-  for (const relativePath of await runtimeFiles(daemonRuntime)) {
-    if (relativePath === "runtime-manifest.json") continue;
-    files[relativePath] = await sha256(path.join(daemonRuntime, relativePath));
+  for (const relative of await runtimeFiles(runtime)) {
+    if (relative !== "runtime-manifest.json") files[relative] = await sha256(path.join(runtime, relative));
   }
-  await writeFile(
-    path.join(daemonRuntime, "runtime-manifest.json"),
-    `${JSON.stringify({ schemaVersion: 1, version: packageJson.version, files }, null, 2)}\n`,
-  );
+  await writeFile(path.join(runtime, "runtime-manifest.json"), JSON.stringify({ schemaVersion: 1, version: packageJson.version, files }, null, 2) + "\n");
 }
 
+requireNativeHost(configuration.platform);
 await mkdir(runtimeCacheDirectory, { recursive: true });
 await copyApplicationResources();
-await prepareNodeRuntime();
-await prepareDaemonRuntime();
+const node = configuration.platform === "macos" ? await prepareMacNode() : await prepareNativeNode();
+await writeTaskctlWrapper(node);
+await prepareDaemonRuntime(node);
 await rm(extractionDirectory, { recursive: true, force: true });
-console.log(`Prepared Tauri resources for ${target} with Node.js ${nodeVersion}`);
+console.log("Prepared Tauri resources for " + target + " with Node.js " + nodeVersion);
